@@ -111,7 +111,7 @@ class ArmIK extends SkeletonModifier3D:
 	var head_pitch := 0.0
 	var head_yaw := 0.0
 
-	func _set(is_right: bool, role: String, i: int) -> void:
+	func _assign_bone(is_right: bool, role: String, i: int) -> void:
 		if is_right:
 			if role == "u" and b_ur < 0: b_ur = i
 			elif role == "f" and b_fr < 0: b_fr = i
@@ -163,7 +163,7 @@ class ArmIK extends SkeletonModifier3D:
 				role = "u"
 			if role == "":
 				continue
-			_set(right, role, i)
+			_assign_bone(right, role, i)
 		ok = b_ur >= 0 and b_fr >= 0 and b_hr >= 0
 		legs_ok = b_tr >= 0 and b_cr >= 0 and b_pr >= 0 and b_tl >= 0 and b_cl >= 0 and b_pl >= 0
 
@@ -3910,9 +3910,6 @@ func _route_len() -> float:
 
 
 # ---------------------------------------------------------------- input
-
-
-
 
 func _input(event: InputEvent) -> void:
 	if menu_active:
