@@ -207,7 +207,7 @@ func setup() -> void:
 	bar_b.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(bar_b)
 
-	title = _lbl("TOWER WARS", 128, Color.WHITE)
+	title = _lbl("FIRELINE", 128, Color.WHITE)
 	title.position = Vector2(90, 70)
 	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
 	title.add_theme_constant_override("outline_size", 10)
