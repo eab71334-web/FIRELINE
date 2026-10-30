@@ -67,11 +67,21 @@ const BULLET_SPEED := 260.0
 
 const WEAPON_FILES := ["", "pistol", "smg", "shotgun", "rifle"]
 const WEAPONS := [
-	{"name": "FISTS", "dmg": 15.0, "rate": 0.45, "auto": false, "pellets": 1, "spread": 0.0, "range": 2.3, "len": 0.0},
+	{"name": "FISTS", "dmg": 15.0, "rate": 0.36, "auto": true, "pellets": 1, "spread": 0.0, "range": 2.4, "len": 0.0},
 	{"name": "PISTOL", "dmg": 26.0, "rate": 0.28, "auto": false, "pellets": 1, "spread": 0.012, "range": 80.0, "len": 0.3},
 	{"name": "SMG", "dmg": 11.0, "rate": 0.075, "auto": true, "pellets": 1, "spread": 0.045, "range": 70.0, "len": 0.5},
 	{"name": "SHOTGUN", "dmg": 13.0, "rate": 0.85, "auto": false, "pellets": 8, "spread": 0.09, "range": 35.0, "len": 0.8},
 	{"name": "RIFLE", "dmg": 20.0, "rate": 0.11, "auto": true, "pellets": 1, "spread": 0.02, "range": 110.0, "len": 0.9},
+]
+# Grip per weapon (aim space: x = right, y = up, z = forward, measured from the right shoulder).
+# pos = where the weapon sits, rg/lg = right/left hand on the weapon (weapon local), pe = elbow flare,
+# kz/kr = recoil kick back / muzzle rise. Tweak these numbers to fine-tune the hold.
+const HOLD := [
+	{},
+	{"pos": Vector3(-0.12, -0.10, 0.50), "rg": Vector3(0.0, -0.04, 0.01), "lg": Vector3(-0.012, -0.085, -0.02), "pe": 0.35, "kz": 0.09, "kr": 0.16},
+	{"pos": Vector3(-0.08, -0.12, 0.36), "rg": Vector3(0.0, -0.045, 0.02), "lg": Vector3(0.0, -0.075, -0.17), "pe": 0.45, "kz": 0.03, "kr": 0.05},
+	{"pos": Vector3(-0.06, -0.10, 0.30), "rg": Vector3(0.0, -0.04, 0.03), "lg": Vector3(0.0, -0.065, -0.30), "pe": 0.50, "kz": 0.14, "kr": 0.22},
+	{"pos": Vector3(-0.10, -0.06, 0.18), "rg": Vector3(0.0, -0.045, 0.03), "lg": Vector3(0.0, -0.06, -0.30), "pe": 0.80, "kz": 0.05, "kr": 0.08},
 ]
 const MAG_SIZE := [0, 12, 30, 6, 30]
 const DEFAULT_RES := [0, 60, 180, 24, 120]
@@ -110,6 +120,10 @@ class ArmIK extends SkeletonModifier3D:
 	var head_w := 0.0
 	var head_pitch := 0.0
 	var head_yaw := 0.0
+	var tgt_r := Vector3.ZERO
+	var tgt_l := Vector3.ZERO
+	var pole_r := Vector3.DOWN
+	var pole_l := Vector3.DOWN
 
 	func _assign_bone(is_right: bool, role: String, i: int) -> void:
 		if is_right:
@@ -178,8 +192,14 @@ class ArmIK extends SkeletonModifier3D:
 		if sk == null:
 			return
 		if ok:
-			_arm(sk, b_ur, b_fr, b_hr, rmode, rw, false)
-			_arm(sk, b_ul, b_fl, b_hl, lmode, lw, true)
+			if rmode == 5:
+				_arm_ik(sk, b_ur, b_fr, b_hr, tgt_r, pole_r, rw)
+			else:
+				_arm(sk, b_ur, b_fr, b_hr, rmode, rw, false)
+			if lmode == 5:
+				_arm_ik(sk, b_ul, b_fl, b_hl, tgt_l, pole_l, lw)
+			else:
+				_arm(sk, b_ul, b_fl, b_hl, lmode, lw, true)
 		if legs_ok and leg_w > 0.01:
 			_leg(sk, b_tr, b_cr, b_pr, phase, leg_w)
 			_leg(sk, b_tl, b_cl, b_pl, phase + PI, leg_w)
@@ -229,6 +249,44 @@ class ArmIK extends SkeletonModifier3D:
 			df = (Vector3.UP * 0.7 + fwd * 0.6 - side * 0.3).normalized()
 		_point(sk, bu, bf, (inv * du).normalized(), w)
 		_point(sk, bf, bh, (inv * df).normalized(), w)
+
+	func joint_world(sk: Skeleton3D, b: int) -> Vector3:
+		return sk.global_transform * sk.get_bone_global_pose(b).origin
+
+	func reach_world(sk: Skeleton3D, bu: int, bf: int, bh: int) -> float:
+		var u := joint_world(sk, bu)
+		var f := joint_world(sk, bf)
+		var h := joint_world(sk, bh)
+		return (f - u).length() + (h - f).length()
+
+	func _arm_ik(sk: Skeleton3D, bu: int, bf: int, bh: int, tgt_world: Vector3, pole_world: Vector3, w: float) -> void:
+		if w <= 0.01 or bu < 0 or bf < 0 or bh < 0:
+			return
+		var inv := sk.global_transform.affine_inverse()
+		var tl := inv * tgt_world
+		var u := sk.get_bone_global_pose(bu).origin
+		var f := sk.get_bone_global_pose(bf).origin
+		var h := sk.get_bone_global_pose(bh).origin
+		var l1 := (f - u).length()
+		var l2 := (h - f).length()
+		if l1 < 0.001 or l2 < 0.001:
+			return
+		var d := tl - u
+		if d.length() < 0.001:
+			return
+		var dist := clampf(d.length(), absf(l1 - l2) + 0.01, l1 + l2 - 0.005)
+		var a := d.normalized()
+		var x := (l1 * l1 - l2 * l2 + dist * dist) / (2.0 * dist)
+		var hgt := sqrt(maxf(l1 * l1 - x * x, 0.0))
+		var pole := (inv.basis * pole_world).normalized()
+		pole = pole - a * pole.dot(a)
+		if pole.length() < 0.001:
+			pole = Vector3.DOWN - a * Vector3.DOWN.dot(a)
+		pole = pole.normalized()
+		var elbow := u + a * x + pole * hgt
+		_point(sk, bu, bf, (elbow - u).normalized(), w)
+		var elb := sk.get_bone_global_pose(bf).origin
+		_point(sk, bf, bh, (tl - elb).normalized(), w)
 
 	func _leg(sk: Skeleton3D, bt: int, bc: int, bp: int, ph: float, w: float) -> void:
 		var inv := sk.global_transform.basis.inverse()
@@ -537,6 +595,50 @@ var car_tsteer := 0.0
 var car_t_ok := false
 var msg_edit: LineEdit
 var sun_light: DirectionalLight3D
+
+# ---- fire / weather / missions ----
+var car_hp := 100.0
+var car_warned := false
+var car_wreck_t := 0.0
+var car_fx_t := 0.0
+var car_head: SpotLight3D
+var car_fire_light: OmniLight3D
+var fire_spots: Array[Dictionary] = []
+var fire_mesh: SphereMesh
+var cam_shake := 0.0
+var world_env: Environment
+var sky_mat: ProceduralSkyMaterial
+var ground_mat: StandardMaterial3D
+var rain: GPUParticles3D
+var rain_snd: AudioStreamPlayer
+var day_t := 0.45
+var night_k := 0.0
+var rain_i := 0.0
+var rain_target := 0.0
+var weather_t := 70.0
+var flash_t := 0.0
+var lamp_mat: StandardMaterial3D
+var lamp_pool_mat: StandardMaterial3D
+var bld_mats: Array[StandardMaterial3D] = []
+var bld_mat_k: Array[float] = []
+var mis_state := 0
+var mis_type := 0
+var mis_name := ""
+var mis_reward := 0
+var mis_dist := 0.0
+var mis_time := 0.0
+var mis_left := 0.0
+var mis_cd := 45.0
+var mis_offer_t := 0.0
+var mis_pick := Vector2.ZERO
+var mis_drop := Vector2.ZERO
+var gun_free := false
+var punch_dur := 0.3
+var punch_kind := 0
+var punch_i := 0
+var punch_idle := 9.0
+var punch_pending := false
+var punch_hit_t := 0.0
 
 
 func _ready() -> void:
@@ -1557,6 +1659,7 @@ func _build_sounds() -> void:
 	sfx["heli"] = _synth_heli()
 	sfx["reload"] = _synth_click(2)
 	sfx["radio"] = _synth_radio()
+	sfx["rain"] = _synth_rain()
 	for k in sfx.keys():
 		var f := _load_sound_file(String(k))
 		if f != null:
@@ -1573,6 +1676,10 @@ func _build_sounds() -> void:
 	heli_snd.stream = sfx["heli"]
 	heli_snd.volume_db = -80.0
 	add_child(heli_snd)
+	rain_snd = AudioStreamPlayer.new()
+	rain_snd.stream = sfx["rain"]
+	rain_snd.volume_db = -80.0
+	add_child(rain_snd)
 
 
 func _sfx3d(key: String, pos: Vector3, vol_db: float = 0.0, pitch: float = 1.0, maxd: float = 140.0) -> void:
@@ -1609,6 +1716,7 @@ func _update_car_audio(delta: float, throttle: float, hb: bool, prev_speed: floa
 	if prev_speed - car_speed > 9.0 and absf(prev_speed) > 10.0 and crash_cd <= 0.0:
 		crash_cd = 0.8
 		_sfx3d("crash", car.position, 2.0, randf_range(0.9, 1.1), 160.0)
+		_car_damage((prev_speed - car_speed) * 1.4)
 
 
 # ---------------------------------------------------------------- effects
@@ -1746,7 +1854,8 @@ func _build_world() -> void:
 	var env := WorldEnvironment.new()
 	var e := Environment.new()
 	var sky := Sky.new()
-	sky.sky_material = ProceduralSkyMaterial.new()
+	sky_mat = ProceduralSkyMaterial.new()
+	sky.sky_material = sky_mat
 	e.background_mode = Environment.BG_SKY
 	e.sky = sky
 	e.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
@@ -1756,6 +1865,7 @@ func _build_world() -> void:
 	e.fog_light_color = Color(0.7, 0.8, 0.9)
 	e.fog_density = 0.004
 	env.environment = e
+	world_env = e
 	add_child(env)
 
 	var sun := DirectionalLight3D.new()
@@ -1771,7 +1881,8 @@ func _build_world() -> void:
 	var pm := PlaneMesh.new()
 	pm.size = Vector2(600, 600)
 	gm.mesh = pm
-	gm.material_override = _mat(Color(0.16, 0.16, 0.18))
+	ground_mat = _mat(Color(0.16, 0.16, 0.18))
+	gm.material_override = ground_mat
 	var gc := CollisionShape3D.new()
 	var bs := BoxShape3D.new()
 	bs.size = Vector3(600, 1, 600)
@@ -1780,6 +1891,7 @@ func _build_world() -> void:
 	ground.add_child(gm)
 	ground.add_child(gc)
 	add_child(ground)
+	_build_rain()
 
 
 func _build_city() -> void:
@@ -1797,12 +1909,24 @@ func _build_city() -> void:
 		Color(0.55, 0.5, 0.45), Color(0.4, 0.45, 0.5), Color(0.55, 0.38, 0.35),
 		Color(0.38, 0.48, 0.42), Color(0.45, 0.45, 0.48), Color(0.6, 0.55, 0.35)
 	]
+	var eimg := Image.create(32, 32, false, Image.FORMAT_RGBA8)
+	eimg.fill(Color(0, 0, 0))
+	for ex in range(9, 23):
+		for ey in range(7, 21):
+			eimg.set_pixel(ex, ey, Color(1.0, 0.82, 0.5))
+	var etex := ImageTexture.create_from_image(eimg)
 	var mats: Array[StandardMaterial3D] = []
 	for t in tints:
 		var m := _mat(t)
 		m.albedo_texture = tex
 		m.uv1_triplanar = true
 		m.uv1_scale = Vector3(0.25, 0.25, 0.25)
+		m.emission_enabled = true
+		m.emission = Color(1, 1, 1)
+		m.emission_texture = etex
+		m.emission_energy_multiplier = 0.0
+		bld_mats.append(m)
+		bld_mat_k.append(randf_range(0.6, 1.3))
 		mats.append(m)
 
 	var walk_mat := _mat(Color(0.5, 0.5, 0.52))
@@ -1836,6 +1960,28 @@ func _build_city() -> void:
 				astar.connect_points(_nid(ix, iz), _nid(ix + 1, iz))
 			if iz < 3:
 				astar.connect_points(_nid(ix, iz), _nid(ix, iz + 1))
+
+	var pole_mat := _mat(Color(0.12, 0.12, 0.14))
+	lamp_mat = StandardMaterial3D.new()
+	lamp_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	lamp_mat.albedo_color = Color(0.25, 0.25, 0.27)
+	lamp_pool_mat = _additive(Color(1.0, 0.8, 0.45, 0.0))
+	var pool_mesh := CylinderMesh.new()
+	pool_mesh.top_radius = 5.5
+	pool_mesh.bottom_radius = 5.5
+	pool_mesh.height = 0.02
+	for li in range(-3, 3):
+		for lj in range(-3, 3):
+			for corner in [7.2, 46.8]:
+				var lp := Vector3(li * BLOCK + corner, 0.0, lj * BLOCK + corner)
+				_box(lp + Vector3(0, 3.5, 0), Vector3(0.2, 7.0, 0.2), pole_mat, false)
+				_box(lp + Vector3(0, 7.1, 0), Vector3(0.8, 0.25, 0.8), lamp_mat, false)
+				var pool := MeshInstance3D.new()
+				pool.mesh = pool_mesh
+				pool.material_override = lamp_pool_mat
+				pool.position = lp + Vector3(0, 0.09, 0)
+				pool.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+				add_child(pool)
 
 
 func _build_marker() -> void:
@@ -1983,10 +2129,14 @@ func _attach_holdables() -> void:
 		rot = Vector3(-90, 0, 0)
 	hold_parent = parent
 
+	gun_free = player_ik != null and player_ik.ok
 	gun_node = Node3D.new()
-	gun_node.position = pos
-	gun_node.rotation_degrees = rot
-	parent.add_child(gun_node)
+	if gun_free:
+		model.add_child(gun_node)
+	else:
+		gun_node.position = pos
+		gun_node.rotation_degrees = rot
+		parent.add_child(gun_node)
 	gun_mesh = MeshInstance3D.new()
 	gun_mesh.mesh = _boxm(Vector3(0.09, 0.14, 0.4))
 	gun_mesh.material_override = _mat(Color(0.12, 0.12, 0.14))
@@ -2024,7 +2174,8 @@ func _fix_hold_scale() -> void:
 	var ps := hold_parent.global_transform.basis.get_scale()
 	if ps.x > 0.0001 and ps.y > 0.0001 and ps.z > 0.0001:
 		var inv := Vector3(1.0 / ps.x, 1.0 / ps.y, 1.0 / ps.z)
-		gun_node.scale = inv
+		if not gun_free:
+			gun_node.scale = inv
 		phone_node.scale = inv
 
 
@@ -2051,15 +2202,23 @@ func _update_player_ik(delta: float) -> void:
 
 	var tr := 0.0
 	var tl := 0.0
+	var fighting := aim_t > 0.0 and cur_weapon == 0 and not in_car and not in_heli and not dead and not phone_open
+	var lunge := 0.0
 	if armed:
 		var shoulder := player.position + Vector3(0, 1.4, 0)
 		var d := _aim_point(60.0) - shoulder
 		if d.length() > 1.0:
 			player_ik.aim_dir = player_ik.aim_dir.slerp(d.normalized(), 1.0 - exp(-14.0 * delta))
-		player_ik.rmode = 1
-		player_ik.lmode = 1 if cur_weapon >= 2 else 2
+		if not _hold_pose(delta):
+			player_ik.rmode = 1
+			player_ik.lmode = 1 if cur_weapon >= 2 else 2
 		tr = 1.0
 		tl = 1.0
+	elif fighting and _fight_pose(delta):
+		tr = 1.0
+		tl = 1.0
+		if punch_t > 0.0:
+			lunge = sin(clampf(1.0 - punch_t / punch_dur, 0.0, 1.0) * PI) * 0.14
 	elif phone_hold:
 		var raising := phone_raise_t > 0.0 and _wa(9, "raise") != ""
 		var has_anim := _wa(9, "idle") != "" or _wa(9, "walk") != ""
@@ -2075,6 +2234,7 @@ func _update_player_ik(delta: float) -> void:
 			player_ik.lmode = 2
 		tr = 1.0
 		tl = 1.0
+	model.position = Vector3(-sin(yaw), 0.0, -cos(yaw)) * lunge
 	var look_src := aim_pitch if aim_blend > 0.5 else cam_pitch
 	player_ik.head_pitch = -clampf(look_src - 0.08, -0.3, 0.75)
 	player_ik.head_yaw = clampf(wrapf(cam_yaw - model.rotation.y, -PI, PI), -1.0, 1.0)
@@ -2229,6 +2389,7 @@ func _build_car() -> void:
 
 	car.position = Vector3(5, 0.1, -9)
 	add_child(car)
+	_build_car_lights()
 
 
 func _make_cop() -> Cop:
@@ -2606,6 +2767,8 @@ func _officer_shoot(o: Officer, tgt3: Vector3) -> void:
 		return
 	var col = hit["collider"]
 	if col == player or col == car:
+		if in_car:
+			_car_damage(randf_range(2.5, 5.0))
 		o.fire_t = 0.3
 		o.a_cur = ""
 		var muzzle := from + (to - from).normalized() * 0.6
@@ -2695,6 +2858,12 @@ func _update_officers(delta: float) -> void:
 		if has_goal:
 			var v2 := (goal - op).normalized()
 			vel = Vector3(v2.x, 0, v2.y) * spd
+		var fsp := _fire_pos_near(o.position, 14.0)
+		if fsp != Vector3.INF:
+			var aw := Vector2(o.position.x - fsp.x, o.position.z - fsp.z).normalized()
+			vel = Vector3(aw.x, 0, aw.y) * 7.5
+			has_goal = true
+			o.aiming = false
 		o.velocity.x = vel.x
 		o.velocity.z = vel.z
 		if o.is_on_floor():
@@ -2797,11 +2966,11 @@ func _damage_cop(c: Cop, dmg: float) -> void:
 	c.hp -= dmg
 	if c.hp <= 0.0:
 		c.dead = true
-		_spark_burst(c.position + Vector3(0, 1.0, 0))
-		_sfx3d("crash", c.position, 4.0, 0.7, 200.0)
+		var cpos := c.position
 		_add_wanted(2)
 		c.queue_free()
 		cops.erase(c)
+		_explode(cpos, 9.0, 45.0)
 
 
 func _spark_burst(pos: Vector3) -> void:
@@ -2908,6 +3077,8 @@ func _update_cop(c: Cop, delta: float) -> void:
 			if d < 8.0:
 				target_speed = 4.0
 
+	if drive and _fire_pos_near(c.position, 22.0) != Vector3.INF:
+		target_speed = -10.0
 	c.speed = move_toward(c.speed, target_speed, 16.0 * delta)
 	var f := -c.global_transform.basis.z
 	c.velocity.x = f.x * c.speed
@@ -2930,6 +3101,8 @@ func _update_cop(c: Cop, delta: float) -> void:
 
 	if hostile and drive and d < 3.4 and absf(c.speed) > 5.0:
 		_hurt_player(30.0 * delta)
+		if in_car:
+			_car_damage(18.0 * delta)
 
 
 func _update_wanted(delta: float) -> void:
@@ -3122,30 +3295,7 @@ func _try_fire(delta: float) -> void:
 	aim_t = 3.0
 
 	if cur_weapon == 0:
-		punch_t = 0.2
-		var flat := Vector3(dir.x, 0, dir.z).normalized()
-		for p in peds:
-			if p.dead:
-				continue
-			var to := p.position - player.position
-			to.y = 0.0
-			if to.length() < rng and flat.angle_to(to.normalized()) < 1.0:
-				_damage_ped(p, float(w["dmg"]))
-		for o in officers:
-			if o.dead:
-				continue
-			var to2 := o.position - player.position
-			to2.y = 0.0
-			if to2.length() < rng and flat.angle_to(to2.normalized()) < 1.0:
-				_damage_ped(o, float(w["dmg"]))
-		for rid in remotes.keys():
-			var rp: RemotePed = remotes[rid]
-			if not is_instance_valid(rp) or rp.dead:
-				continue
-			var to3 := rp.position - player.position
-			to3.y = 0.0
-			if to3.length() < rng and flat.angle_to(to3.normalized()) < 1.0:
-				_hit_remote(rp, float(w["dmg"]))
+		_start_punch(dir)
 		return
 
 	fire_anim_t = 0.3
@@ -3176,7 +3326,10 @@ func _try_fire(delta: float) -> void:
 func _bullet(from: Vector3, dir: Vector3, rng: float, dmg: float, vis_from: Vector3) -> void:
 	var to := from + dir * rng
 	var q := PhysicsRayQueryParameters3D.create(from, to, 3)
-	q.exclude = [player.get_rid(), car.get_rid()]
+	var bex: Array[RID] = [player.get_rid()]
+	if in_car:
+		bex.append(car.get_rid())
+	q.exclude = bex
 	var hit := get_world_3d().direct_space_state.intersect_ray(q)
 	var end := to
 	if not hit.is_empty():
@@ -3191,6 +3344,9 @@ func _bullet(from: Vector3, dir: Vector3, rng: float, dmg: float, vis_from: Vect
 			_impact(end, normal, true)
 		elif col is Cop:
 			_damage_cop(col as Cop, dmg)
+			_impact(end, normal, false)
+		elif col == car:
+			_car_damage(dmg * 0.8)
 			_impact(end, normal, false)
 		else:
 			_impact(end, normal, false)
@@ -3283,6 +3439,7 @@ func _build_ui() -> void:
 
 func _process(delta: float) -> void:
 	var rd := delta / maxf(Engine.time_scale, 0.05)
+	_update_daynight(delta)
 	ui.visible = not menu_active
 	mini_panel.visible = not menu_active
 	if menu != null and menu_active and not menu_checked:
@@ -3507,6 +3664,14 @@ func _draw_ui() -> void:
 			var pn := String(net.players[pid]["name"])
 			ui.draw_string(ThemeDB.fallback_font, Vector2(30, ly), "%s%s" % [pn, " (you)" if int(pid) == net.my_id else ""], HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color(0.5, 1, 0.6, 0.9))
 			ly += 28.0
+	var clk_h := int(day_t * 24.0) % 24
+	var clk_m := int(fmod(day_t * 24.0, 1.0) * 60.0)
+	_txt(ui, "%02d:%02d" % [clk_h, clk_m], Vector2(66.0, 200.0), 24, Color(1, 1, 1, 0.8))
+	if rain_i > 0.3:
+		_txt(ui, "RAIN", Vector2(66.0, 226.0), 18, Color(0.6, 0.8, 1.0, 0.9))
+	if in_car and car_hp < 30.0 and car_wreck_t <= 0.0 and (int(time * 4.0) % 2 == 0):
+		_txt(ui, "ENGINE ON FIRE!", Vector2(s.x * 0.5, 175.0), 38, Color(1.0, 0.45, 0.1))
+	_draw_mission(s)
 	if apps != null:
 		apps.draw_hud(ui)
 	if dead:
@@ -3639,6 +3804,9 @@ func _draw_gauge() -> void:
 	_txt(ui, g, c + Vector2(0, -48), 36, gc)
 	_txt(ui, str(int(kmh)), c + Vector2(0, 56), 58)
 	_txt(ui, "KM/H", c + Vector2(0, 96), 20, Color(1, 1, 1, 0.6))
+	var chf := clampf(car_hp / 100.0, 0.0, 1.0)
+	ui.draw_rect(Rect2(c.x - 70.0, c.y + 118.0, 140.0, 10.0), Color(0, 0, 0, 0.5))
+	ui.draw_rect(Rect2(c.x - 70.0, c.y + 118.0, 140.0 * chf, 10.0), Color(1.0 - chf * 0.6, 0.3 + chf * 0.5, 0.15))
 
 
 func _mp(w: Vector2, origin: Vector2, w_off: Vector2, sc: float, rot: float) -> Vector2:
@@ -3837,6 +4005,7 @@ func _phone_app(i: int) -> void:
 		car.velocity = Vector3.ZERO
 		car_speed = 0.0
 		car.rotation.y = snappedf(cam_yaw, PI * 0.5)
+		_car_repair()
 		_toast("YOUR CAR IS HERE")
 		_set_phone(false)
 	elif i == 2:
@@ -3942,6 +4111,14 @@ func _input(event: InputEvent) -> void:
 				return
 			if dead:
 				return
+			if mis_state == 1:
+				if _mis_accept_rect().has_point(p):
+					_mis_accept()
+					return
+				if _mis_skip_rect().has_point(p):
+					mis_state = 0
+					mis_cd = 25.0
+					return
 			if _mini_rect().has_point(p):
 				_set_map(true)
 				return
@@ -4032,7 +4209,7 @@ func _physics_process(delta: float) -> void:
 	if dead:
 		input = Vector2.ZERO
 
-	near_car = (not in_car) and (not in_heli) and (not dead) and player.position.distance_to(car.position) < 6.0
+	near_car = (not in_car) and (not in_heli) and (not dead) and car_wreck_t <= 0.0 and player.position.distance_to(car.position) < 6.0
 	near_heli = heli != null and (not in_heli) and (not in_car) and (not dead) and player.position.distance_to(heli.position) < 7.0
 
 	if not in_car and not in_heli and look_id == -1 and not armed_now and not dead:
@@ -4062,12 +4239,16 @@ func _physics_process(delta: float) -> void:
 	gun_node.visible = cur_weapon > 0 and not in_car and not in_heli and aim_t > 0.0 and not phone_open
 	phone_node.visible = phone_open and not in_car and not in_heli and phone_t > 0.3
 
+	_update_punch(delta)
 	_try_fire(delta)
 	_update_peds(delta)
 	_update_remotes(delta)
 	_update_cops(delta)
 	_update_officers(delta)
 	_update_wanted(delta)
+	_update_car_fx(delta)
+	_update_fire_spots(delta)
+	_update_mission(delta)
 	_update_camera(delta)
 
 	if in_car and absf(car_speed) > 7.0 and not dead:
@@ -4120,7 +4301,7 @@ func _walk(delta: float, input: Vector2) -> void:
 		if step_t <= 0.0:
 			step_t = 1.0
 			_sfx3d("step", player.position, -9.0 + clampf(speed, 0.0, 8.0) * 0.5, randf_range(0.85, 1.15), 40.0)
-	if aim_t > 0.0 and cur_weapon > 0:
+	if aim_t > 0.0:
 		model.rotation.y = lerp_angle(model.rotation.y, cam_yaw, 1.0 - exp(-12.0 * delta))
 	elif target.length() > 0.1:
 		var want_yaw := atan2(-target.x, -target.z)
@@ -4240,6 +4421,9 @@ func _update_camera(delta: float) -> void:
 	if not hit.is_empty():
 		desired = hit["position"] + (tgt - desired).normalized() * 0.35
 		kf = 30.0
+	if cam_shake > 0.01:
+		desired += Vector3(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0), randf_range(-1.0, 1.0)) * cam_shake * 0.35
+		cam_shake = move_toward(cam_shake, 0.0, delta * 1.8)
 	if cam_ease > 0.0:
 		cam_ease = maxf(cam_ease - delta, 0.0)
 		var er := cam_ease / 1.6
@@ -4581,6 +4765,8 @@ func _toggle_car() -> void:
 
 
 func _car_step(delta: float, input: Vector2, driven: bool, handbrake: bool) -> void:
+	if car_wreck_t > 0.0:
+		return
 	if net != null and net.active and net.car_owner != net.my_id:
 		_car_puppet(delta)
 	else:
@@ -4907,3 +5093,698 @@ func _update_msg_edit() -> void:
 	msg_edit.placeholder_text = String(ci["ph"])
 	msg_edit.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER if bool(ci["num"]) else LineEdit.KEYBOARD_TYPE_DEFAULT
 	msg_edit.visible = true
+
+
+# ================================================================
+# FIRELINE: fire & explosions
+# ================================================================
+
+func _dim(c: Color, k: float) -> Color:
+	return Color(c.r * k, c.g * k, c.b * k, c.a)
+
+
+func _txtw(c: Control, t: String, p: Vector2, size: int, col: Color, w: float) -> void:
+	c.draw_string(ThemeDB.fallback_font, p + Vector2(-w * 0.5, size * 0.35), t, HORIZONTAL_ALIGNMENT_CENTER, w, size, col)
+
+
+func _flame(pos: Vector3, size: float) -> void:
+	if fire_mesh == null:
+		fire_mesh = _spherem(0.5)
+	var m := _additive(Color(1.0, randf_range(0.35, 0.65), 0.1, 0.9))
+	var mi := MeshInstance3D.new()
+	mi.mesh = fire_mesh
+	mi.material_override = m
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+	mi.global_position = pos
+	mi.scale = Vector3.ONE * size * 0.6
+	_fx_add(mi, 0.5, 0.0, Vector3(randf_range(-0.5, 0.5), randf_range(1.8, 3.2), randf_range(-0.5, 0.5)), 0.0, m, 0.9)
+
+
+func _big_smoke(pos: Vector3, size: float, alpha: float) -> void:
+	if fire_mesh == null:
+		fire_mesh = _spherem(0.5)
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	var gc := randf_range(0.1, 0.28)
+	m.albedo_color = Color(gc, gc, gc, alpha)
+	var mi := MeshInstance3D.new()
+	mi.mesh = fire_mesh
+	mi.material_override = m
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+	mi.global_position = pos
+	mi.scale = Vector3.ONE * size * 0.5
+	_fx_add(mi, 1.6, size * 0.9, Vector3(randf_range(-0.5, 0.5), randf_range(2.0, 3.2), randf_range(-0.5, 0.5)), 0.0, m, alpha)
+
+
+func _fling(p: Node3D, away: Vector3) -> void:
+	var dir := Vector3.RIGHT
+	if away.length() > 0.1:
+		dir = away.normalized()
+	var tw := create_tween().set_parallel(true)
+	tw.tween_property(p, "position:x", p.position.x + dir.x * 8.0, 0.7).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_property(p, "position:z", p.position.z + dir.z * 8.0, 0.7).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	var tw2 := create_tween()
+	tw2.tween_property(p, "position:y", 3.5, 0.3).set_ease(Tween.EASE_OUT)
+	tw2.tween_property(p, "position:y", 0.1, 0.4).set_ease(Tween.EASE_IN)
+
+
+func _explode(pos: Vector3, radius: float, dmg: float, from_car: bool = false) -> void:
+	_spark_burst(pos + Vector3(0, 1.0, 0))
+	var ring := MeshInstance3D.new()
+	var rm := CylinderMesh.new()
+	rm.top_radius = 1.0
+	rm.bottom_radius = 1.0
+	rm.height = 0.05
+	ring.mesh = rm
+	var rmat := _additive(Color(1.0, 0.8, 0.5, 0.6))
+	ring.material_override = rmat
+	ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(ring)
+	ring.global_position = pos + Vector3(0, 0.3, 0)
+	_fx_add(ring, 0.45, radius * 2.2, Vector3.ZERO, 0.0, rmat, 0.6)
+	for i in 16:
+		_flame(pos + Vector3(randf_range(-2.5, 2.5), randf_range(0.2, 2.0), randf_range(-2.5, 2.5)), randf_range(1.6, 3.2))
+	for i in 10:
+		_big_smoke(pos + Vector3(randf_range(-2.0, 2.0), randf_range(0.8, 2.5), randf_range(-2.0, 2.0)), randf_range(1.5, 2.6), 0.75)
+	var dm := _mat(Color(0.08, 0.08, 0.09))
+	for i in 10:
+		var chunk := MeshInstance3D.new()
+		chunk.mesh = _boxm(Vector3(randf_range(0.2, 0.6), randf_range(0.08, 0.25), randf_range(0.2, 0.6)))
+		chunk.material_override = dm
+		add_child(chunk)
+		chunk.global_position = pos + Vector3(0, 0.8, 0)
+		var dv := Vector3(randf_range(-1.0, 1.0), 0.0, randf_range(-1.0, 1.0)).normalized() * randf_range(5.0, 13.0) + Vector3(0, randf_range(8.0, 15.0), 0)
+		_fx_add(chunk, 3.0, 0.0, dv, 22.0, null, 1.0, Vector3(randf_range(-12.0, 12.0), randf_range(-12.0, 12.0), randf_range(-12.0, 12.0)), true)
+	var lt := OmniLight3D.new()
+	lt.light_color = Color(1.0, 0.6, 0.25)
+	lt.light_energy = 10.0
+	lt.omni_range = radius * 2.5
+	add_child(lt)
+	lt.global_position = pos + Vector3(0, 2.0, 0)
+	_fx_add(lt, 0.35)
+
+	_sfx3d("crash", pos, 10.0, 0.5, 400.0)
+	_sfx3d("shotgun", pos, 8.0, 0.45, 400.0)
+	_alarm(pos, radius * 3.5)
+	if cam != null:
+		cam_shake = maxf(cam_shake, clampf(1.0 - cam.position.distance_to(pos) / 70.0, 0.0, 1.0) * 1.2)
+
+	for p in peds:
+		if p.dead:
+			continue
+		var dp := p.position.distance_to(pos)
+		if dp < radius:
+			var away := p.position - pos
+			away.y = 0.0
+			_kill_ped(p)
+			_fling(p, away)
+	for ob in officers.duplicate():
+		var o := ob as Officer
+		if o == null or o.dead:
+			continue
+		var dof := o.position.distance_to(pos)
+		if dof < radius:
+			var away2 := o.position - pos
+			away2.y = 0.0
+			_damage_ped(o, 300.0)
+			_fling(o, away2)
+	for cb in cops.duplicate():
+		var cc := cb as Cop
+		if cc == null or cc.dead:
+			continue
+		var dcp := cc.position.distance_to(pos)
+		if dcp < radius:
+			_damage_cop(cc, dmg * (1.0 - dcp / radius) * 4.0 + 40.0)
+	if int(gset["pvp"]) == 1:
+		for rid in remotes.keys():
+			var rp: RemotePed = remotes[rid]
+			if is_instance_valid(rp) and not rp.dead:
+				var drp := rp.position.distance_to(pos)
+				if drp < radius:
+					_hit_remote(rp, dmg * (1.0 - drp / radius))
+	var ppos := car.position if in_car else player.position
+	var dpl := ppos.distance_to(pos)
+	if dpl < radius and not dead:
+		_hurt_player(dmg * (1.0 - dpl / radius))
+	if not from_car and car_wreck_t <= 0.0:
+		var dcar := car.position.distance_to(pos)
+		if dcar < radius:
+			_car_damage(dmg * 1.3 * (1.0 - dcar / radius))
+	if radius >= 8.0:
+		fire_spots.append({"p": pos, "t": 10.0, "e": 0.0, "d": 0.0})
+
+
+func _car_damage(amount: float) -> void:
+	if car_wreck_t > 0.0 or amount <= 0.0:
+		return
+	if net != null and net.active and net.car_owner != net.my_id:
+		return
+	car_hp -= amount
+	if car_hp < 30.0 and not car_warned:
+		car_warned = true
+		if in_car:
+			_toast("ENGINE ON FIRE - GET OUT!", 3.5)
+	if car_hp <= 0.0:
+		_blow_car()
+
+
+func _blow_car() -> void:
+	if car_wreck_t > 0.0:
+		return
+	var pos := car.position
+	car_hp = 0.0
+	car_wreck_t = 14.0
+	var was_in := in_car
+	car.visible = false
+	car.collision_layer = 0
+	car.collision_mask = 0
+	car.velocity = Vector3.ZERO
+	car_speed = 0.0
+	if car_fire_light != null:
+		car_fire_light.visible = false
+	_explode(pos, 15.0, 75.0, true)
+	if was_in:
+		if net != null and net.active:
+			net.request_car_exit()
+		_exit_car()
+		var away := Vector3(randf_range(-1.0, 1.0), 0.0, randf_range(-1.0, 1.0)).normalized()
+		player.velocity = away * 7.0 + Vector3(0, 8.0, 0)
+	_toast("YOUR CAR EXPLODED", 3.0)
+
+
+func _car_repair() -> void:
+	car_hp = 100.0
+	car_warned = false
+	car_wreck_t = 0.0
+	car.visible = true
+	car.collision_layer = 1
+	car.collision_mask = 1
+	if car_fire_light != null:
+		car_fire_light.visible = false
+
+
+func _fire_pos_near(p: Vector3, r: float) -> Vector3:
+	for f in fire_spots:
+		var fp: Vector3 = f["p"]
+		if fp.distance_to(p) < r:
+			return fp
+	if car_hp < 30.0 and car_wreck_t <= 0.0 and car.position.distance_to(p) < r:
+		return car.position
+	return Vector3.INF
+
+
+func _update_car_fx(delta: float) -> void:
+	if car_wreck_t > 0.0:
+		car_wreck_t -= delta
+		if car_wreck_t <= 0.0:
+			car.position = Vector3(5, 0.1, -9)
+			car.rotation = Vector3.ZERO
+			car.velocity = Vector3.ZERO
+			car_speed = 0.0
+			_car_repair()
+		return
+	var burning := car_hp < 30.0
+	if car_fire_light != null:
+		car_fire_light.visible = burning
+		if burning:
+			car_fire_light.light_energy = randf_range(2.0, 5.0)
+	if car_hp >= 60.0:
+		return
+	car_fx_t -= delta
+	if car_fx_t <= 0.0:
+		car_fx_t = 0.05 if burning else 0.2
+		if cam != null and cam.position.distance_to(car.position) < 120.0:
+			var hood := car.global_transform * Vector3(randf_range(-0.5, 0.5), 1.0, -1.6)
+			if burning:
+				_flame(hood, randf_range(0.8, 1.4))
+				if randf() < 0.4:
+					_big_smoke(hood + Vector3(0, 0.6, 0), 0.9, 0.55)
+			else:
+				_big_smoke(hood, 0.6, 0.4)
+	if burning:
+		if in_car and not dead:
+			_hurt_player(2.0 * delta)
+		_car_damage(3.0 * delta)
+
+
+func _update_fire_spots(delta: float) -> void:
+	for i in range(fire_spots.size() - 1, -1, -1):
+		var f: Dictionary = fire_spots[i]
+		f["t"] = float(f["t"]) - delta
+		if float(f["t"]) <= 0.0:
+			fire_spots.remove_at(i)
+			continue
+		var fp: Vector3 = f["p"]
+		f["e"] = float(f["e"]) - delta
+		if float(f["e"]) <= 0.0:
+			f["e"] = 0.09
+			if cam != null and cam.position.distance_to(fp) < 90.0:
+				_flame(fp + Vector3(randf_range(-2.0, 2.0), 0.2, randf_range(-2.0, 2.0)), randf_range(0.9, 1.7))
+				if randf() < 0.25:
+					_big_smoke(fp + Vector3(0, 1.5, 0), 1.4, 0.5)
+		f["d"] = float(f["d"]) - delta
+		if float(f["d"]) <= 0.0:
+			f["d"] = 0.25
+			var ppos := car.position if in_car else player.position
+			if not dead and ppos.distance_to(fp) < 3.2:
+				_hurt_player(3.0)
+			for p in peds:
+				if not p.dead and p.position.distance_to(fp) < 3.0:
+					_kill_ped(p)
+
+
+func _build_car_lights() -> void:
+	car_head = SpotLight3D.new()
+	car_head.position = Vector3(0.0, 1.0, -2.2)
+	car_head.rotation_degrees = Vector3(-7.0, 0.0, 0.0)
+	car_head.spot_range = 55.0
+	car_head.spot_angle = 34.0
+	car_head.spot_attenuation = 0.6
+	car_head.light_energy = 4.0
+	car_head.light_color = Color(1.0, 0.95, 0.8)
+	car_head.visible = false
+	car.add_child(car_head)
+	car_fire_light = OmniLight3D.new()
+	car_fire_light.position = Vector3(0.0, 1.4, -1.2)
+	car_fire_light.omni_range = 12.0
+	car_fire_light.light_color = Color(1.0, 0.5, 0.15)
+	car_fire_light.light_energy = 3.0
+	car_fire_light.visible = false
+	car.add_child(car_fire_light)
+
+
+# ================================================================
+# FIRELINE: day / night + rain
+# ================================================================
+
+func _synth_rain() -> AudioStreamWAV:
+	var rate := 22050
+	var n := rate * 2
+	var s := PackedFloat32Array()
+	s.resize(n)
+	var lp := 0.0
+	var lp2 := 0.0
+	for i in n:
+		var x := randf() * 2.0 - 1.0
+		lp += (x - lp) * 0.35
+		lp2 += (lp - lp2) * 0.2
+		s[i] = (lp - lp2) * 0.9 + x * 0.05
+	return _wav(s, rate, true)
+
+
+func _build_rain() -> void:
+	rain = GPUParticles3D.new()
+	rain.amount = 3500
+	rain.lifetime = 0.7
+	rain.emitting = false
+	rain.local_coords = false
+	rain.visibility_aabb = AABB(Vector3(-40, -30, -40), Vector3(80, 60, 80))
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(18.0, 0.5, 18.0)
+	pm.direction = Vector3(0.08, -1.0, 0.0)
+	pm.spread = 1.5
+	pm.initial_velocity_min = 26.0
+	pm.initial_velocity_max = 32.0
+	pm.gravity = Vector3(0.0, -6.0, 0.0)
+	rain.process_material = pm
+	var rm := BoxMesh.new()
+	rm.size = Vector3(0.014, 0.7, 0.014)
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.albedo_color = Color(0.78, 0.85, 1.0, 0.5)
+	rm.material = mat
+	rain.draw_pass_1 = rm
+	rain.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(rain)
+
+
+func _update_daynight(delta: float) -> void:
+	if world_env == null or sun_light == null or cam == null or sky_mat == null:
+		return
+	day_t = fposmod(day_t + delta / 600.0, 1.0)
+	weather_t -= delta
+	if weather_t <= 0.0:
+		rain_target = 1.0 if randf() < 0.4 else 0.0
+		weather_t = randf_range(50.0, 110.0)
+	rain_i = move_toward(rain_i, rain_target, delta * 0.15)
+	var wet := rain_i
+	var sun_h := sin((day_t - 0.25) * TAU)
+	var day := smoothstep(-0.12, 0.3, sun_h)
+	night_k = 1.0 - day
+	var dusk := clampf(1.0 - absf(sun_h) / 0.3, 0.0, 1.0)
+
+	var top := Color(0.01, 0.015, 0.05).lerp(Color(0.3, 0.5, 0.85), day)
+	var hor := Color(0.03, 0.04, 0.09).lerp(Color(0.65, 0.76, 0.9), day)
+	hor = hor.lerp(Color(0.95, 0.5, 0.25), dusk * 0.55 * (1.0 - wet * 0.7))
+	var grey := _dim(Color(0.42, 0.45, 0.5), 0.15 + 0.85 * day)
+	top = top.lerp(grey, wet * 0.75)
+	hor = hor.lerp(grey, wet * 0.75)
+	sky_mat.sky_top_color = top
+	sky_mat.sky_horizon_color = hor
+	sky_mat.ground_horizon_color = hor
+	sky_mat.ground_bottom_color = _dim(hor, 0.5)
+	world_env.fog_light_color = hor
+	world_env.fog_density = lerpf(0.004, 0.011, wet)
+	world_env.ambient_light_energy = lerpf(0.2, 0.6, day) * (1.0 - 0.25 * wet)
+
+	var sun_c := Color(0.55, 0.65, 1.0).lerp(Color(1.0, 0.96, 0.9), day).lerp(Color(1.0, 0.65, 0.4), dusk * 0.6)
+	sun_light.light_color = sun_c
+	sun_light.light_energy = lerpf(0.1, 0.8, day) * (1.0 - 0.55 * wet)
+	sun_light.rotation_degrees = Vector3(-(18.0 + 52.0 * maxf(sun_h, 0.0)), 30.0 + (day_t - 0.5) * 170.0, 0.0)
+	if night_k > 0.4 or wet > 0.5:
+		sun_light.sky_mode = DirectionalLight3D.SKY_MODE_LIGHT_ONLY
+	else:
+		sun_light.sky_mode = DirectionalLight3D.SKY_MODE_LIGHT_AND_SKY
+
+	if wet > 0.75 and flash_t <= 0.0 and randf() < delta * 0.05:
+		flash_t = 0.35
+		get_tree().create_timer(randf_range(0.6, 1.8)).timeout.connect(func() -> void: _sfx3d("crash", cam.position, -4.0, 0.3, 900.0))
+	if flash_t > 0.0:
+		flash_t = maxf(flash_t - delta, 0.0)
+		var fk := flash_t / 0.35
+		world_env.ambient_light_energy += fk * fk * 2.5
+		sun_light.light_energy += fk * fk * 2.0
+
+	var lights := clampf(night_k + 0.4 * wet, 0.0, 1.0)
+	for i in bld_mats.size():
+		bld_mats[i].emission_energy_multiplier = lights * 1.1 * bld_mat_k[i]
+	if lamp_mat != null:
+		lamp_mat.albedo_color = Color(0.25, 0.25, 0.27).lerp(Color(1.0, 0.86, 0.5), clampf(lights * 1.5, 0.0, 1.0))
+	if lamp_pool_mat != null:
+		lamp_pool_mat.albedo_color = Color(1.0, 0.8, 0.45, 0.28 * lights)
+	if car_head != null:
+		car_head.visible = lights > 0.3
+	if ground_mat != null:
+		ground_mat.roughness = lerpf(0.95, 0.12, wet)
+		ground_mat.albedo_color = Color(0.16, 0.16, 0.18).darkened(wet * 0.3)
+
+	if rain != null:
+		rain.emitting = wet > 0.25
+		rain.global_position = cam.global_position + Vector3(0, 12.0, 0)
+	if rain_snd != null:
+		rain_snd.volume_db = lerpf(-50.0, -14.0, wet)
+		if wet > 0.05 and not rain_snd.playing:
+			rain_snd.play()
+		elif wet <= 0.02 and rain_snd.playing:
+			rain_snd.stop()
+
+
+# ================================================================
+# FIRELINE: phone jobs (courier / getaway)
+# ================================================================
+
+func _mis_rect() -> Rect2:
+	return Rect2(30.0, 260.0, 600.0, 190.0)
+
+
+func _mis_accept_rect() -> Rect2:
+	return Rect2(55.0, 350.0, 270.0, 80.0)
+
+
+func _mis_skip_rect() -> Rect2:
+	return Rect2(335.0, 350.0, 270.0, 80.0)
+
+
+func _mis_offer() -> void:
+	var p3 := car.position if in_car else player.position
+	var pp := Vector2(p3.x, p3.z)
+	var a := Vector2.ZERO
+	var b := Vector2.ZERO
+	for tries in 20:
+		a = Vector2(randi_range(-3, 3), randi_range(-3, 3)) * BLOCK
+		if a.distance_to(pp) > 70.0 and a.distance_to(pp) < 220.0:
+			break
+	for tries in 20:
+		b = Vector2(randi_range(-3, 3), randi_range(-3, 3)) * BLOCK
+		if b.distance_to(a) > 130.0:
+			break
+	mis_type = 1 if randf() < 0.35 else 0
+	mis_name = "GETAWAY" if mis_type == 1 else "COURIER"
+	mis_pick = a
+	mis_drop = b
+	mis_dist = a.distance_to(b)
+	mis_time = (45.0 if mis_type == 1 else 30.0) + mis_dist / 13.0
+	var rw := 300.0 + mis_dist * 3.5
+	if mis_type == 1:
+		rw *= 2.2
+	mis_reward = int(round(rw / 50.0)) * 50
+	mis_state = 1
+	mis_offer_t = 18.0
+	_sfx3d("radio", player.position, 0.0, 0.8, 60.0)
+
+
+func _mis_accept() -> void:
+	mis_state = 2
+	_set_dest(mis_pick)
+	_toast("%s ACCEPTED - FOLLOW THE ROUTE" % mis_name, 3.0)
+
+
+func _mis_end(ok: bool) -> void:
+	if ok:
+		if apps != null:
+			apps.add_money(mis_reward)
+		_toast("JOB COMPLETE  +$%d" % mis_reward, 3.5)
+		mis_cd = 40.0
+		if mis_type == 1:
+			stars = 0
+			evade_t = 0.0
+	else:
+		_toast("JOB FAILED", 3.0)
+		mis_cd = 25.0
+	mis_state = 0
+	_clear_route()
+
+
+func _update_mission(delta: float) -> void:
+	if menu_active or net_client:
+		return
+	if dead:
+		if mis_state >= 2:
+			_mis_end(false)
+		return
+	if mis_state == 0:
+		mis_cd -= delta
+		if mis_cd <= 0.0 and stars == 0:
+			_mis_offer()
+	elif mis_state == 1:
+		mis_offer_t -= delta
+		if mis_offer_t <= 0.0:
+			mis_state = 0
+			mis_cd = 30.0
+	else:
+		var p3 := car.position if in_car else player.position
+		var pp := Vector2(p3.x, p3.z)
+		if mis_state == 2:
+			if pp.distance_to(mis_pick) < 12.0:
+				mis_state = 3
+				mis_left = mis_time
+				_set_dest(mis_drop)
+				if mis_type == 1 and int(gset["police"]) == 1:
+					stars = 3
+					wanted_cool = 4.0
+					spawn_t = 0.5
+					evade_t = 0.0
+					_toast("GO GO GO - POLICE ARE ON YOU!", 3.0)
+				else:
+					_toast("PACKAGE PICKED UP - DELIVER IT", 3.0)
+				_sfx3d("radio", player.position, 0.0, 1.0, 60.0)
+		else:
+			mis_left -= delta
+			if pp.distance_to(mis_drop) < 12.0:
+				_mis_end(true)
+			elif mis_left <= 0.0:
+				_mis_end(false)
+
+
+func _draw_mission(s: Vector2) -> void:
+	if mis_state == 1:
+		var r := _mis_rect()
+		ui.draw_style_box(sb_map, r)
+		_txtw(ui, "NEW JOB: " + mis_name, r.position + Vector2(r.size.x * 0.5, 40.0), 34, Color(1.0, 0.85, 0.4), 560.0)
+		_txtw(ui, "REWARD $%d   |   %d m" % [mis_reward, int(mis_dist)], r.position + Vector2(r.size.x * 0.5, 90.0), 26, Color.WHITE, 560.0)
+		var a := _mis_accept_rect()
+		ui.draw_style_box(sb_btn, a)
+		_txtw(ui, "ACCEPT", a.position + a.size * 0.5, 30, Color(0.4, 1.0, 0.55), 260.0)
+		var k := _mis_skip_rect()
+		ui.draw_style_box(sb_btn, k)
+		_txtw(ui, "SKIP", k.position + k.size * 0.5, 30, Color.WHITE, 260.0)
+	elif mis_state >= 2:
+		var tgt := mis_pick if mis_state == 2 else mis_drop
+		var p3 := car.position if in_car else player.position
+		var dd := Vector2(p3.x, p3.z).distance_to(tgt)
+		var line := "%s: GO TO PICKUP  %d m" % [mis_name, int(dd)]
+		if mis_state == 3:
+			line = "%s: DELIVER  %d m   %d s" % [mis_name, int(dd), int(maxf(mis_left, 0.0))]
+		_txtw(ui, line, Vector2(s.x * 0.5, 215.0), 26, Color(0.85, 0.5, 1.0), 900.0)
+
+
+# ================================================================
+# FIRELINE: per-weapon grips (two-hand IK) + boxing
+# ================================================================
+
+func _hold_pose(_delta: float) -> bool:
+	if player_ik == null or not player_ik.ok or char_skeleton == null or not gun_free or cur_weapon < 1:
+		return false
+	var sk := char_skeleton
+	var ik := player_ik
+	var fw := ik.aim_dir.normalized()
+	var rt := fw.cross(Vector3.UP)
+	if rt.length() < 0.05:
+		rt = Vector3(cos(cam_yaw), 0.0, -sin(cam_yaw))
+	rt = rt.normalized()
+	var up := rt.cross(fw).normalized()
+	var gb := Basis(rt, up, -fw)
+	var hold: Dictionary = HOLD[cur_weapon]
+	var rsh := ik.joint_world(sk, ik.b_ur)
+	var lsh := ik.joint_world(sk, ik.b_ul)
+	var rreach := ik.reach_world(sk, ik.b_ur, ik.b_fr, ik.b_hr) * 0.97
+	var lreach := ik.reach_world(sk, ik.b_ul, ik.b_fl, ik.b_hl) * 0.97
+	var off: Vector3 = hold["pos"]
+	var rgl: Vector3 = hold["rg"]
+	var lgl: Vector3 = hold["lg"]
+	var kick := clampf(fire_anim_t / 0.3, 0.0, 1.0)
+	kick *= kick
+	var sway := sin(time * 1.7) * 0.004
+	var bob := 0.0
+	if speed > 0.5:
+		bob = sin(ik_phase * 2.0) * 0.012 * clampf(speed / MAX_SPEED, 0.0, 1.0)
+	gb = Basis(rt, kick * float(hold["kr"])) * gb
+	var origin := rsh + rt * off.x + up * (off.y + bob + sway) + fw * (off.z - kick * float(hold["kz"]))
+	for it in 6:
+		var tgr := origin + gb * rgl
+		var tgl := origin + gb * lgl
+		var over := maxf(tgr.distance_to(rsh) - rreach, tgl.distance_to(lsh) - lreach)
+		if over <= 0.0:
+			break
+		origin -= fw * minf(over, 0.06)
+	gun_node.global_transform = Transform3D(gb, origin)
+	ik.tgt_r = origin + gb * rgl
+	ik.tgt_l = origin + gb * lgl
+	var pe := float(hold["pe"])
+	ik.pole_r = -up + rt * pe
+	ik.pole_l = -up - rt * pe
+	ik.rmode = 5
+	ik.lmode = 5
+	return true
+
+
+func _fight_pose(_delta: float) -> bool:
+	if player_ik == null or not player_ik.ok or char_skeleton == null:
+		return false
+	var sk := char_skeleton
+	var ik := player_ik
+	var yaw := model.rotation.y
+	var fw := Vector3(-sin(yaw), 0.0, -cos(yaw))
+	var rt := Vector3(cos(yaw), 0.0, -sin(yaw))
+	var up := Vector3.UP
+	var rsh := ik.joint_world(sk, ik.b_ur)
+	var lsh := ik.joint_world(sk, ik.b_ul)
+	var rr := ik.reach_world(sk, ik.b_ur, ik.b_fr, ik.b_hr) * 0.97
+	var lr := ik.reach_world(sk, ik.b_ul, ik.b_fl, ik.b_hl) * 0.97
+	var ch := (rsh + lsh) * 0.5
+	var bob := sin(time * 3.2) * 0.012
+	if speed > 0.5:
+		bob = sin(ik_phase * 2.0) * 0.02
+	var g_l := ch + rt * -0.15 + up * (0.02 + bob) + fw * 0.34
+	var g_r := ch + rt * 0.11 + up * (0.0 - bob) + fw * 0.28
+	var t_l := g_l
+	var t_r := g_r
+	var pl := -up - rt * 0.5
+	var pr := -up + rt * 0.5
+	if punch_t > 0.0:
+		var pp := clampf(1.0 - punch_t / punch_dur, 0.0, 1.0)
+		var bell := sin(pp * PI)
+		if punch_kind == 0:
+			t_l = g_l.lerp(lsh + fw * lr + rt * 0.02, bell)
+			pl = -up - rt * 0.3
+		elif punch_kind == 1:
+			t_r = g_r.lerp(rsh + fw * rr + rt * -0.10, bell)
+			pr = -up + rt * 0.3
+		elif punch_kind == 2:
+			var hx := lerpf(-0.45, 0.06, smoothstep(0.15, 0.75, pp))
+			var hook := ch + rt * hx + fw * (0.22 + 0.22 * bell) + up * 0.03
+			t_l = g_l.lerp(hook, bell)
+			pl = -rt + up * 0.35
+		else:
+			var uy := lerpf(-0.30, 0.14, smoothstep(0.1, 0.7, pp))
+			var upc := ch + rt * 0.10 + fw * (0.28 + 0.14 * bell) + up * uy
+			t_r = g_r.lerp(upc, bell)
+			pr = -up + rt * 0.3
+	ik.tgt_l = t_l
+	ik.tgt_r = t_r
+	ik.pole_l = pl
+	ik.pole_r = pr
+	ik.rmode = 5
+	ik.lmode = 5
+	return true
+
+
+func _start_punch(dir: Vector3) -> void:
+	if punch_idle > 1.4:
+		punch_i = 0
+	punch_kind = punch_i % 4
+	punch_i += 1
+	punch_idle = 0.0
+	punch_dur = 0.36 if punch_kind == 3 else 0.30
+	punch_t = punch_dur
+	punch_hit_t = punch_dur * 0.42
+	punch_pending = true
+	model.rotation.y = atan2(-dir.x, -dir.z)
+	aim_t = 3.0
+
+
+func _update_punch(delta: float) -> void:
+	punch_idle += delta
+	if punch_pending:
+		punch_hit_t -= delta
+		if punch_hit_t <= 0.0:
+			punch_pending = false
+			_punch_hit()
+
+
+func _punch_hit() -> void:
+	var w: Dictionary = WEAPONS[0]
+	var rng := float(w["range"])
+	var flat := Vector3(-sin(model.rotation.y), 0.0, -cos(model.rotation.y))
+	var dmg := float(w["dmg"]) * (1.6 if punch_kind == 3 else 1.0)
+	var hit_any := false
+	for p in peds:
+		if p.dead:
+			continue
+		var to := p.position - player.position
+		to.y = 0.0
+		if to.length() < rng and flat.angle_to(to.normalized()) < 1.0:
+			_damage_ped(p, dmg)
+			_impact(p.position + Vector3(0, 1.3, 0), -flat, true)
+			hit_any = true
+			if punch_kind == 3 and p.dead:
+				_fling(p, to)
+	for ob in officers.duplicate():
+		var o := ob as Officer
+		if o == null or o.dead:
+			continue
+		var to2 := o.position - player.position
+		to2.y = 0.0
+		if to2.length() < rng and flat.angle_to(to2.normalized()) < 1.0:
+			_damage_ped(o, dmg)
+			_impact(o.position + Vector3(0, 1.3, 0), -flat, true)
+			hit_any = true
+			if punch_kind == 3 and o.dead:
+				_fling(o, to2)
+	for rid in remotes.keys():
+		var rp: RemotePed = remotes[rid]
+		if not is_instance_valid(rp) or rp.dead:
+			continue
+		var to3 := rp.position - player.position
+		to3.y = 0.0
+		if to3.length() < rng and flat.angle_to(to3.normalized()) < 1.0:
+			_hit_remote(rp, dmg)
+			hit_any = true
+	if hit_any:
+		_sfx3d("step", player.position + flat + Vector3(0, 1.2, 0), 4.0, 0.5, 40.0)
+		cam_shake = maxf(cam_shake, 0.25)
