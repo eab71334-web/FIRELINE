@@ -639,6 +639,10 @@ var punch_i := 0
 var punch_idle := 9.0
 var punch_pending := false
 var punch_hit_t := 0.0
+var soft_tex: ImageTexture
+var quad_mesh: QuadMesh
+var hit_marker_t := 0.0
+var vig_tex: GradientTexture2D
 
 
 func _ready() -> void:
@@ -1153,6 +1157,16 @@ func canon(n: String) -> String:
 
 
 func _anim_parse(low: String) -> Array:
+	if low.contains("guard") or low.contains("boxing_idle") or low.contains("fight_idle"):
+		return [0, "guard"]
+	if low.contains("uppercut"):
+		return [0, "upper"]
+	if low.contains("hook"):
+		return [0, "hook"]
+	if low.contains("cross"):
+		return [0, "cross"]
+	if low.contains("jab") or low.contains("punch"):
+		return [0, "jab"]
 	var skip := ["crouch", "offset", "d90", "u90", "root_motion", "bwd", "back", "left", "right", "strafe", "turn"]
 	for s in skip:
 		if low.contains(s):
@@ -1350,7 +1364,7 @@ func _retarget(ap: AnimationPlayer, sk: Skeleton3D, ckey: String, top: Node = nu
 		if kept < 6:
 			continue
 		var base_name := String(k).get_slice("_", 1)
-		var looped := base_name in ["idle", "aim", "walk", "run"]
+		var looped := base_name in ["idle", "aim", "walk", "run", "guard"]
 		anim.loop_mode = Animation.LOOP_LINEAR if looped else Animation.LOOP_NONE
 		var aname := "x_" + String(k)
 		lib.add_animation(aname, anim)
@@ -1860,6 +1874,14 @@ func _build_world() -> void:
 	e.sky = sky
 	e.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	e.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	e.adjustment_enabled = true
+	e.adjustment_contrast = 1.10
+	e.adjustment_saturation = 1.14
+	e.glow_enabled = true
+	e.glow_intensity = 0.75
+	e.glow_bloom = 0.08
+	e.glow_hdr_threshold = 0.85
+	e.glow_blend_mode = Environment.GLOW_BLEND_MODE_SCREEN
 	e.ambient_light_energy = 0.6
 	e.fog_enabled = true
 	e.fog_light_color = Color(0.7, 0.8, 0.9)
@@ -1982,6 +2004,26 @@ func _build_city() -> void:
 				pool.position = lp + Vector3(0, 0.09, 0)
 				pool.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 				add_child(pool)
+
+	var zebra := MultiMesh.new()
+	zebra.transform_format = MultiMesh.TRANSFORM_3D
+	var zlist: Array[Transform3D] = []
+	for zi in range(-3, 4):
+		for zj in range(-3, 4):
+			var zc := Vector3(zi * BLOCK, 0.035, zj * BLOCK)
+			for sgn in [-1.0, 1.0]:
+				for zk in range(-2, 3):
+					zlist.append(Transform3D(Basis.IDENTITY, zc + Vector3(sgn * 8.6, 0.0, zk * 2.4)))
+					zlist.append(Transform3D(Basis(Vector3.UP, PI * 0.5), zc + Vector3(zk * 2.4, 0.0, sgn * 8.6)))
+	zebra.mesh = _boxm(Vector3(3.0, 0.02, 0.9))
+	zebra.instance_count = zlist.size()
+	for zn in zlist.size():
+		zebra.set_instance_transform(zn, zlist[zn])
+	var zmi := MultiMeshInstance3D.new()
+	zmi.multimesh = zebra
+	zmi.material_override = _mat(Color(0.82, 0.82, 0.8))
+	zmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(zmi)
 
 
 func _build_marker() -> void:
@@ -2209,12 +2251,16 @@ func _update_player_ik(delta: float) -> void:
 		var d := _aim_point(60.0) - shoulder
 		if d.length() > 1.0:
 			player_ik.aim_dir = player_ik.aim_dir.slerp(d.normalized(), 1.0 - exp(-14.0 * delta))
-		if not _hold_pose(delta):
-			player_ik.rmode = 1
-			player_ik.lmode = 1 if cur_weapon >= 2 else 2
-		tr = 1.0
-		tl = 1.0
-	elif fighting and _fight_pose(delta):
+		if _gun_anim_on():
+			_set_gun_free(false)
+		else:
+			_set_gun_free(true)
+			if not _hold_pose(delta):
+				player_ik.rmode = 1
+				player_ik.lmode = 1 if cur_weapon >= 2 else 2
+			tr = 1.0
+			tl = 1.0
+	elif fighting and not _fist_anim_on() and _fight_pose(delta):
 		tr = 1.0
 		tl = 1.0
 		if punch_t > 0.0:
@@ -2974,14 +3020,16 @@ func _damage_cop(c: Cop, dmg: float) -> void:
 
 
 func _spark_burst(pos: Vector3) -> void:
+	var m := _soft_mat(Color(1.0, 0.62, 0.22, 0.9), true)
 	var mi := MeshInstance3D.new()
-	mi.mesh = _spherem(1.0)
-	mi.material_override = _additive(Color(1.0, 0.5, 0.1, 0.8))
+	mi.mesh = _quad()
+	mi.material_override = m
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
 	mi.global_position = pos
-	_fx_add(mi, 0.5, 7.0)
-	_smoke(pos + Vector3(0, 1, 0), Vector3.UP, 0.8, 0.7)
+	mi.scale = Vector3.ONE * 3.0
+	_fx_add(mi, 0.4, 16.0, Vector3.ZERO, 0.0, m, 0.9)
+	_big_smoke(pos + Vector3(0, 1, 0), 2.5, 0.7)
 
 
 func _update_cops(delta: float) -> void:
@@ -3336,6 +3384,8 @@ func _bullet(from: Vector3, dir: Vector3, rng: float, dmg: float, vis_from: Vect
 		end = hit["position"]
 		var normal: Vector3 = hit["normal"]
 		var col = hit["collider"]
+		if col is Ped or col is Cop:
+			hit_marker_t = 0.2
 		if col is RemotePed:
 			_hit_remote(col as RemotePed, dmg)
 			_impact(end, normal, true)
@@ -3649,6 +3699,15 @@ func _draw_ui() -> void:
 		ui.draw_line(cc + Vector2(0, -24), cc + Vector2(0, -9), ca, 3.0)
 		ui.draw_line(cc + Vector2(0, 24), cc + Vector2(0, 9), ca, 3.0)
 
+	if hit_marker_t > 0.0:
+		var hc := s * 0.5
+		var hcol := Color(1.0, 0.35, 0.2, clampf(hit_marker_t / 0.2, 0.0, 1.0))
+		for sx in [-1.0, 1.0]:
+			for sy in [-1.0, 1.0]:
+				ui.draw_line(hc + Vector2(sx * 9.0, sy * 9.0), hc + Vector2(sx * 20.0, sy * 20.0), hcol, 3.0)
+	if hp < 40.0 and not dead:
+		var va := clampf((40.0 - hp) / 40.0, 0.0, 1.0) * (0.55 + 0.45 * sin(time * 5.0))
+		ui.draw_texture_rect(_vignette_tex(), Rect2(Vector2.ZERO, s), false, Color(1, 1, 1, va))
 	if dest_set:
 		_txt(ui, "%d m" % int(_route_len()), Vector2(mr.position.x + mr.size.x * 0.5, mr.end.y + 130.0), 30, Color(0.85, 0.5, 1.0))
 	if arrived_t > 0.0:
@@ -4191,6 +4250,7 @@ func _physics_process(delta: float) -> void:
 	aim_t = maxf(aim_t - delta, 0.0)
 	punch_t = maxf(punch_t - delta, 0.0)
 	hurt_flash = maxf(hurt_flash - delta, 0.0)
+	hit_marker_t = maxf(hit_marker_t - delta, 0.0)
 	fire_anim_t = maxf(fire_anim_t - delta, 0.0)
 	raise_t = maxf(raise_t - delta, 0.0)
 	phone_raise_t = maxf(phone_raise_t - delta, 0.0)
@@ -4515,6 +4575,8 @@ func _animate_glb(on_floor: bool) -> void:
 				want = _first([_wa(9, "walk"), _wa(9, "run"), a_walk, a_run])
 			else:
 				want = _first([_wa(9, "idle"), a_idle])
+	elif w == 0 and aim_t > 0.0 and not phone_open and _fist_anims_exist():
+		want = _fist_want(walk, run)
 	elif armed:
 		if raise_t > 0.0:
 			want = _wx(w, "raise")
@@ -4551,6 +4613,8 @@ func _animate_glb(on_floor: bool) -> void:
 
 	if frozen:
 		anim_player.speed_scale = 0.0
+	elif _is_punch_anim(a_cur):
+		anim_player.speed_scale = clampf(anim_player.current_animation_length / 0.38, 0.8, 3.0)
 	elif a_cur != "" and (a_cur == a_walk or a_cur == _wx(w, "walk") or a_cur == _wa(9, "walk")):
 		anim_player.speed_scale = clampf(speed / 2.2, 0.6, 1.8)
 	elif a_cur != "" and (a_cur == a_run or a_cur == _wx(w, "run") or a_cur == _wa(9, "run")):
@@ -4623,6 +4687,8 @@ func apply_gset() -> void:
 			var p: Ped = peds.pop_back()
 			p.queue_free()
 	var q := clampi(int(gset["quality"]), 0, 2)
+	if world_env != null:
+		world_env.glow_enabled = q >= 1
 	var vp := get_viewport()
 	vp.scaling_3d_scale = [0.6, 0.8, 1.0][q]
 	vp.msaa_3d = [Viewport.MSAA_DISABLED, Viewport.MSAA_2X, Viewport.MSAA_4X][q]
@@ -5096,7 +5162,7 @@ func _update_msg_edit() -> void:
 
 
 # ================================================================
-# FIRELINE: fire & explosions
+# ASHFALL: fire & explosions
 # ================================================================
 
 func _dim(c: Color, k: float) -> Color:
@@ -5107,36 +5173,63 @@ func _txtw(c: Control, t: String, p: Vector2, size: int, col: Color, w: float) -
 	c.draw_string(ThemeDB.fallback_font, p + Vector2(-w * 0.5, size * 0.35), t, HORIZONTAL_ALIGNMENT_CENTER, w, size, col)
 
 
+func _soft_tex() -> ImageTexture:
+	if soft_tex != null:
+		return soft_tex
+	var img := Image.create(64, 64, false, Image.FORMAT_RGBA8)
+	for y in 64:
+		for x in 64:
+			var dd := Vector2(float(x) - 31.5, float(y) - 31.5).length() / 31.5
+			var a := pow(clampf(1.0 - dd, 0.0, 1.0), 1.8)
+			img.set_pixel(x, y, Color(1, 1, 1, a))
+	soft_tex = ImageTexture.create_from_image(img)
+	return soft_tex
+
+
+func _quad() -> QuadMesh:
+	if quad_mesh == null:
+		quad_mesh = QuadMesh.new()
+		quad_mesh.size = Vector2(1, 1)
+	return quad_mesh
+
+
+func _soft_mat(col: Color, add: bool) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	if add:
+		m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	m.albedo_texture = _soft_tex()
+	m.albedo_color = col
+	m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	m.billboard_keep_scale = true
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return m
+
+
 func _flame(pos: Vector3, size: float) -> void:
-	if fire_mesh == null:
-		fire_mesh = _spherem(0.5)
-	var m := _additive(Color(1.0, randf_range(0.35, 0.65), 0.1, 0.9))
+	var m := _soft_mat(Color(1.0, randf_range(0.35, 0.65), 0.1, 0.9), true)
 	var mi := MeshInstance3D.new()
-	mi.mesh = fire_mesh
+	mi.mesh = _quad()
 	mi.material_override = m
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
 	mi.global_position = pos
-	mi.scale = Vector3.ONE * size * 0.6
+	mi.scale = Vector3.ONE * size * 1.3
 	_fx_add(mi, 0.5, 0.0, Vector3(randf_range(-0.5, 0.5), randf_range(1.8, 3.2), randf_range(-0.5, 0.5)), 0.0, m, 0.9)
 
 
 func _big_smoke(pos: Vector3, size: float, alpha: float) -> void:
-	if fire_mesh == null:
-		fire_mesh = _spherem(0.5)
-	var m := StandardMaterial3D.new()
-	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	var gc := randf_range(0.1, 0.28)
-	m.albedo_color = Color(gc, gc, gc, alpha)
+	var m := _soft_mat(Color(gc, gc, gc, alpha), false)
 	var mi := MeshInstance3D.new()
-	mi.mesh = fire_mesh
+	mi.mesh = _quad()
 	mi.material_override = m
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
 	mi.global_position = pos
-	mi.scale = Vector3.ONE * size * 0.5
-	_fx_add(mi, 1.6, size * 0.9, Vector3(randf_range(-0.5, 0.5), randf_range(2.0, 3.2), randf_range(-0.5, 0.5)), 0.0, m, alpha)
+	mi.scale = Vector3.ONE * size * 1.2
+	_fx_add(mi, 1.6, size * 1.6, Vector3(randf_range(-0.5, 0.5), randf_range(2.0, 3.2), randf_range(-0.5, 0.5)), 0.0, m, alpha)
 
 
 func _fling(p: Node3D, away: Vector3) -> void:
@@ -5377,7 +5470,7 @@ func _build_car_lights() -> void:
 
 
 # ================================================================
-# FIRELINE: day / night + rain
+# ASHFALL: day / night + rain
 # ================================================================
 
 func _synth_rain() -> AudioStreamWAV:
@@ -5495,7 +5588,7 @@ func _update_daynight(delta: float) -> void:
 
 
 # ================================================================
-# FIRELINE: phone jobs (courier / getaway)
+# ASHFALL: phone jobs (courier / getaway)
 # ================================================================
 
 func _mis_rect() -> Rect2:
@@ -5624,7 +5717,7 @@ func _draw_mission(s: Vector2) -> void:
 
 
 # ================================================================
-# FIRELINE: per-weapon grips (two-hand IK) + boxing
+# ASHFALL: per-weapon grips (two-hand IK) + boxing
 # ================================================================
 
 func _hold_pose(_delta: float) -> bool:
@@ -5734,6 +5827,7 @@ func _start_punch(dir: Vector3) -> void:
 	punch_t = punch_dur
 	punch_hit_t = punch_dur * 0.42
 	punch_pending = true
+	a_cur = ""
 	model.rotation.y = atan2(-dir.x, -dir.z)
 	aim_t = 3.0
 
@@ -5786,5 +5880,85 @@ func _punch_hit() -> void:
 			_hit_remote(rp, dmg)
 			hit_any = true
 	if hit_any:
+		hit_marker_t = 0.2
 		_sfx3d("step", player.position + flat + Vector3(0, 1.2, 0), 4.0, 0.5, 40.0)
 		cam_shake = maxf(cam_shake, 0.25)
+
+
+# ================================================================
+# Real animation hooks (Mixamo / any retargeted clip)
+# ================================================================
+
+func _fist_anims_exist() -> bool:
+	for k in ["guard", "jab", "cross", "hook", "upper"]:
+		if _wa(0, String(k)) != "":
+			return true
+	return false
+
+
+func _fist_want(walk: bool, run: bool) -> String:
+	if punch_t > 0.0:
+		var keys := ["jab", "cross", "hook", "upper"]
+		var pk := String(keys[punch_kind])
+		return _first([_wa(0, pk), _wa(0, "jab"), _wa(0, "cross"), _wa(0, "hook"), _wa(0, "upper")])
+	var g := _wa(0, "guard")
+	if g != "" and not walk and not run:
+		return g
+	return ""
+
+
+func _is_punch_anim(n: String) -> bool:
+	if n == "":
+		return false
+	return n == _wa(0, "jab") or n == _wa(0, "cross") or n == _wa(0, "hook") or n == _wa(0, "upper")
+
+
+func _fist_anim_on() -> bool:
+	if anim_player == null or a_cur == "":
+		return false
+	var names := [_wa(0, "guard"), _wa(0, "jab"), _wa(0, "cross"), _wa(0, "hook"), _wa(0, "upper")]
+	if not (a_cur in names):
+		return false
+	return bool(_flags(player_ckey, a_cur)[0])
+
+
+func _gun_anim_on() -> bool:
+	if anim_player == null or cur_weapon < 1:
+		return false
+	var an := _first([_wa(cur_weapon, "aim"), _wa(cur_weapon, "idle"), _wa(cur_weapon, "walk")])
+	if an == "":
+		return false
+	return bool(_flags(player_ckey, an)[0])
+
+
+func _set_gun_free(free: bool) -> void:
+	if free == gun_free or gun_node == null or hold_parent == null:
+		return
+	if player_ik == null or not player_ik.ok:
+		return
+	gun_free = free
+	var old := gun_node.get_parent()
+	if old != null:
+		old.remove_child(gun_node)
+	if free:
+		model.add_child(gun_node)
+		gun_node.scale = Vector3.ONE
+	else:
+		hold_parent.add_child(gun_node)
+		gun_node.position = GUN_HAND_POS
+		gun_node.rotation_degrees = GUN_HAND_ROT
+
+
+func _vignette_tex() -> GradientTexture2D:
+	if vig_tex == null:
+		var gr := Gradient.new()
+		gr.colors = PackedColorArray([Color(0.6, 0.0, 0.0, 0.0), Color(0.6, 0.0, 0.0, 0.0), Color(0.78, 0.02, 0.02, 0.9)])
+		gr.offsets = PackedFloat32Array([0.0, 0.55, 1.0])
+		vig_tex = GradientTexture2D.new()
+		vig_tex.gradient = gr
+		vig_tex.fill = GradientTexture2D.FILL_RADIAL
+		vig_tex.fill_from = Vector2(0.5, 0.5)
+		vig_tex.fill_to = Vector2(1.0, 0.5)
+		vig_tex.width = 256
+		vig_tex.height = 128
+	return vig_tex
