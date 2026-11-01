@@ -43,7 +43,7 @@ jobs:
           export_filter="all_resources"
           include_filter=""
           exclude_filter=""
-          export_path="build/android/FIRELINE.apk"
+          export_path="build/android/ASHFALL.apk"
           encryption_include_filters=""
           encryption_exclude_filters=""
           encrypt_pck=false
@@ -52,8 +52,8 @@ jobs:
           [preset.0.options]
 
           gradle_build/use_gradle_build=false
-          package/unique_name="com.fireline.game"
-          package/name="FIRELINE"
+          package/unique_name="com.ashfall.game"
+          package/name="ASHFALL"
           package/signed=true
 
           version/code=1
@@ -98,9 +98,9 @@ jobs:
       - name: Export APK
         run: |
           mkdir -p build/android
-          godot --headless --verbose --export-debug "Android" build/android/FIRELINE.apk
+          godot --headless --verbose --export-debug "Android" build/android/ASHFALL.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: FIRELINE-apk-v1.0.0
-          path: build/android/FIRELINE.apk
+          name: ASHFALL-apk-v1.0.0
+          path: build/android/ASHFALL.apk
