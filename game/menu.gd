@@ -1,5 +1,14 @@
 extends Node
-# menu.gd - GTA-style intro, main menu, character, settings, LAN lobby
+# menu.gd - ASHFALL main menu: white / blue theme, character, settings, LAN lobby
+
+# ---- theme (matches the app icon) ----
+const ACC := Color(0.14, 0.50, 1.0)
+const ACC_BG := Color(0.14, 0.50, 1.0, 0.96)
+const ACC_EDGE := Color(1.0, 1.0, 1.0, 0.5)
+const ACC_SOFT := Color(0.50, 0.76, 1.0)
+const AMBER := Color(0.62, 0.88, 1.0)
+const PANEL_BG := Color(0.04, 0.06, 0.10)
+const BTN_BG := Color(0.07, 0.09, 0.14, 0.84)
 
 const MT := {
 	"en": {"play": "PLAY", "resume": "RESUME", "multi": "MULTIPLAYER", "char": "CHARACTER", "set": "SETTINGS", "back": "BACK", "tag": "OPEN WORLD   |   LOS CITY", "name": "PLAYER NAME", "skin": "CHARACTER", "num": "YOUR PHONE NUMBER", "newnum": "NEW NUMBER", "pop": "POPULATION", "qual": "GRAPHICS / RESOLUTION", "fps": "FRAME RATE", "shadow": "SHADOWS", "police": "POLICE", "pvp": "PLAYER VS PLAYER", "lan": "OPEN TO FRIENDS (LAN)", "showfps": "SHOW FPS", "sens": "CAMERA SENSITIVITY", "vol": "VOLUME", "low": "LOW", "norm": "NORMAL", "high": "HIGH", "med": "MEDIUM", "off": "OFF", "on": "ON", "plow": "LOW", "pnorm": "NORMAL", "phigh": "HIGH", "games": "GAMES ON YOUR WI-FI", "none": "No games found.\nAsk your friend to start the game on the same Wi-Fi.", "join": "JOIN", "ip": "OR ENTER HIS IP ADDRESS", "yourip": "YOUR IP", "host": "Your game is open to friends on the same Wi-Fi", "hostoff": "Your game is private (turn on LAN in settings)", "conn": "Connecting...", "leave": "LEAVE GAME", "tip": "Cross-play: iPhone and Android on the same Wi-Fi.", "phone": "PHONE", "hint": "Name"},
@@ -41,6 +50,8 @@ var dbg: Label
 var build_ok := false
 var build_step := ""
 var safe_btn: Button
+var title_line: ColorRect
+var ver_lbl: Label
 
 
 func _t(k: String) -> String:
@@ -63,6 +74,15 @@ func _sb(bg: Color, border: Color, rad: int, bw: int = 0) -> StyleBoxFlat:
 	return s
 
 
+func _track(col: Color) -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = col
+	s.set_corner_radius_all(6)
+	s.content_margin_top = 5
+	s.content_margin_bottom = 5
+	return s
+
+
 func _lbl(text: String, size: int, col: Color = Color.WHITE, al: int = 0) -> Label:
 	var l := Label.new()
 	l.text = text
@@ -79,11 +99,23 @@ func _btn(text: String, size: Vector2, accent: bool = false, fs: int = 30) -> Bu
 	b.custom_minimum_size = size
 	b.focus_mode = Control.FOCUS_NONE
 	b.alignment = HORIZONTAL_ALIGNMENT_CENTER if lk == "ar" else HORIZONTAL_ALIGNMENT_LEFT
-	var bg := Color(0.14, 0.5, 1.0, 0.95) if accent else Color(0.07, 0.09, 0.14, 0.8)
-	var bd := Color(1, 1, 1, 0.5) if accent else Color(1, 1, 1, 0.16)
-	b.add_theme_stylebox_override("normal", _sb(bg, bd, 16, 2))
-	b.add_theme_stylebox_override("hover", _sb(bg.lightened(0.12), bd, 16, 2))
-	b.add_theme_stylebox_override("pressed", _sb(bg.darkened(0.2), bd, 16, 2))
+	var bg := ACC_BG if accent else BTN_BG
+	var bd := ACC_EDGE if accent else Color(1, 1, 1, 0.16)
+	b.add_theme_stylebox_override("normal", _sb(bg, bd, 8, 1))
+	b.add_theme_stylebox_override("hover", _sb(bg.lightened(0.14), ACC_SOFT if not accent else bd, 8, 1))
+	b.add_theme_stylebox_override("pressed", _sb(bg.darkened(0.2), bd, 8, 1))
+	b.pivot_offset = size * 0.5
+	if not accent:
+		var strip := ColorRect.new()
+		strip.color = ACC
+		strip.size = Vector2(5, size.y)
+		strip.modulate.a = 0.35
+		strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		b.add_child(strip)
+		b.mouse_entered.connect(_btn_hover.bind(strip, true))
+		b.mouse_exited.connect(_btn_hover.bind(strip, false))
+	b.button_down.connect(_btn_press.bind(b, true))
+	b.button_up.connect(_btn_press.bind(b, false))
 	b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	b.add_theme_font_size_override("font_size", fs)
 	b.add_theme_color_override("font_color", Color.WHITE)
@@ -93,11 +125,57 @@ func _btn(text: String, size: Vector2, accent: bool = false, fs: int = 30) -> Bu
 	return b
 
 
+func _btn_hover(strip: ColorRect, on: bool) -> void:
+	var tw := create_tween().set_parallel(true)
+	tw.tween_property(strip, "modulate:a", 1.0 if on else 0.35, 0.12)
+	tw.tween_property(strip, "size:x", 10.0 if on else 5.0, 0.12)
+
+
+func _btn_press(b: Button, down: bool) -> void:
+	var tw := create_tween()
+	tw.tween_property(b, "scale", Vector2(0.97, 0.97) if down else Vector2.ONE, 0.08)
+
+
+func _add_embers(vp: Vector2) -> void:
+	var gg := Gradient.new()
+	gg.colors = PackedColorArray([Color(1, 1, 1, 1), Color(1, 1, 1, 0)])
+	gg.offsets = PackedFloat32Array([0.0, 1.0])
+	var gtx := GradientTexture2D.new()
+	gtx.gradient = gg
+	gtx.fill = GradientTexture2D.FILL_RADIAL
+	gtx.fill_from = Vector2(0.5, 0.5)
+	gtx.fill_to = Vector2(1.0, 0.5)
+	gtx.width = 32
+	gtx.height = 32
+	var em := CPUParticles2D.new()
+	em.texture = gtx
+	em.amount = 70
+	em.lifetime = 8.0
+	em.preprocess = 8.0
+	em.emission_shape = CPUParticles2D.EMISSION_SHAPE_RECTANGLE
+	em.emission_rect_extents = Vector2(vp.x * 0.5, 8.0)
+	em.position = Vector2(vp.x * 0.5, -10.0)
+	em.direction = Vector2(-0.25, 1.0)
+	em.spread = 22.0
+	em.gravity = Vector2.ZERO
+	em.initial_velocity_min = 40.0
+	em.initial_velocity_max = 150.0
+	em.scale_amount_min = 0.25
+	em.scale_amount_max = 0.9
+	var ramp := Gradient.new()
+	ramp.colors = PackedColorArray([Color(0.75, 0.88, 1.0, 0.0), Color(0.9, 0.96, 1.0, 0.85), Color(0.45, 0.72, 1.0, 0.0)])
+	ramp.offsets = PackedFloat32Array([0.0, 0.2, 1.0])
+	em.color_ramp = ramp
+	root.add_child(em)
+
+
 func _panel(r: Rect2, alpha: float = 0.72) -> Panel:
 	var p := Panel.new()
 	p.position = r.position
 	p.size = r.size
-	p.add_theme_stylebox_override("panel", _sb(Color(0.04, 0.06, 0.1, alpha), Color(1, 1, 1, 0.14), 22, 2))
+	var bgc := PANEL_BG
+	bgc.a = alpha
+	p.add_theme_stylebox_override("panel", _sb(bgc, Color(0.55, 0.78, 1.0, 0.25), 20, 2))
 	return p
 
 
@@ -186,7 +264,28 @@ func setup() -> void:
 	build_step = "sound"
 
 	var vp: Vector2 = g._vp()
-	dbg = _lbl("menu: start", 20, Color(1, 0.6, 0.2))
+
+	# dark blue gradient on the left so the menu reads cleanly over the city
+	var gr := Gradient.new()
+	gr.colors = PackedColorArray([Color(0.02, 0.03, 0.07, 0.88), Color(0.02, 0.06, 0.15, 0.45), Color(0.02, 0.03, 0.07, 0.0)])
+	gr.offsets = PackedFloat32Array([0.0, 0.55, 1.0])
+	var gt := GradientTexture2D.new()
+	gt.gradient = gr
+	gt.fill_from = Vector2(0, 0)
+	gt.fill_to = Vector2(1, 0)
+	gt.width = 256
+	gt.height = 8
+	var shade := TextureRect.new()
+	shade.texture = gt
+	shade.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	shade.stretch_mode = TextureRect.STRETCH_SCALE
+	shade.position = Vector2.ZERO
+	shade.size = Vector2(vp.x * 0.62, vp.y)
+	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(shade)
+	_add_embers(vp)
+
+	dbg = _lbl("menu: start", 20, ACC_SOFT)
 	dbg.position = Vector2(30, vp.y - 50)
 	dbg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(dbg)
@@ -207,15 +306,28 @@ func setup() -> void:
 	bar_b.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(bar_b)
 
-	title = _lbl("FIRELINE", 128, Color.WHITE)
+	title = _lbl("ASHFALL", 128, Color(1, 1, 1))
 	title.position = Vector2(90, 70)
-	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
-	title.add_theme_constant_override("outline_size", 10)
+	title.add_theme_color_override("font_outline_color", Color(0.0, 0.05, 0.16, 0.92))
+	title.add_theme_constant_override("outline_size", 12)
 	title.modulate.a = 0.0
 	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(title)
-	tagline = _lbl(_t("tag"), 26, Color(1, 0.85, 0.4))
-	tagline.position = Vector2(98, 212)
+	var breathe := create_tween().set_loops()
+	breathe.tween_property(title, "self_modulate", Color(0.9, 0.97, 1.2, 1.0), 2.2).set_trans(Tween.TRANS_SINE)
+	breathe.tween_property(title, "self_modulate", Color(1, 1, 1, 1), 2.2).set_trans(Tween.TRANS_SINE)
+	title_line = ColorRect.new()
+	title_line.color = ACC
+	title_line.position = Vector2(98, 204)
+	title_line.size = Vector2(0, 4)
+	title_line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(title_line)
+	ver_lbl = _lbl("ASHFALL   |   BUILD 1.0", 18, Color(1, 1, 1, 0.38))
+	ver_lbl.position = Vector2(98, vp.y - 108)
+	ver_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(ver_lbl)
+	tagline = _lbl(_t("tag"), 26, ACC_SOFT)
+	tagline.position = Vector2(98, 218)
 	tagline.modulate.a = 0.0
 	tagline.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(tagline)
@@ -246,13 +358,13 @@ func setup() -> void:
 
 
 func _build_card(vp: Vector2) -> void:
-	card = _panel(Rect2(vp.x - 520, 90, 450, 150), 0.78)
+	card = _panel(Rect2(vp.x - 520, 90, 450, 150), 0.8)
 	card.modulate.a = 0.0
 	root.add_child(card)
 	var av := Panel.new()
 	av.position = Vector2(22, 25)
 	av.size = Vector2(100, 100)
-	av.add_theme_stylebox_override("panel", _sb(Color(0.14, 0.5, 1.0), Color(1, 1, 1, 0.8), 50, 3))
+	av.add_theme_stylebox_override("panel", _sb(ACC, Color(1, 0.85, 0.65, 0.85), 50, 3))
 	card.add_child(av)
 	card_av = _lbl("P", 56, Color.WHITE, 1)
 	card_av.size = Vector2(100, 100)
@@ -266,7 +378,7 @@ func _build_card(vp: Vector2) -> void:
 	var pl := _lbl(_t("phone"), 18, Color(1, 1, 1, 0.55))
 	pl.position = Vector2(145, 78)
 	card.add_child(pl)
-	card_num = _lbl("", 34, Color(0.4, 1, 0.55))
+	card_num = _lbl("", 34, AMBER)
 	card_num.position = Vector2(145, 98)
 	card.add_child(card_num)
 
@@ -297,6 +409,12 @@ func _build_main(vp: Vector2) -> void:
 	s.add_child(b_leave)
 
 
+func _field_style(l: LineEdit) -> void:
+	l.add_theme_stylebox_override("normal", _sb(Color(1, 1, 1, 0.08), Color(1, 1, 1, 0.26), 14, 2))
+	l.add_theme_stylebox_override("focus", _sb(Color(1, 1, 1, 0.14), ACC, 14, 2))
+	l.add_theme_color_override("caret_color", ACC_SOFT)
+
+
 func _build_char(vp: Vector2) -> void:
 	var s := _screen("char")
 	var px := vp.x - 620.0
@@ -311,8 +429,7 @@ func _build_char(vp: Vector2) -> void:
 	name_edit.max_length = 16
 	name_edit.placeholder_text = _t("hint")
 	name_edit.add_theme_font_size_override("font_size", 34)
-	name_edit.add_theme_stylebox_override("normal", _sb(Color(1, 1, 1, 0.1), Color(1, 1, 1, 0.3), 14, 2))
-	name_edit.add_theme_stylebox_override("focus", _sb(Color(1, 1, 1, 0.16), Color(0.3, 0.7, 1.0), 14, 2))
+	_field_style(name_edit)
 	name_edit.text_changed.connect(_on_name)
 	name_edit.text_submitted.connect(_on_name_done)
 	s.add_child(name_edit)
@@ -336,7 +453,7 @@ func _build_char(vp: Vector2) -> void:
 	var l3 := _lbl(_t("num"), 20, Color(1, 1, 1, 0.55))
 	l3.position = Vector2(px + 30, 400)
 	s.add_child(l3)
-	num_lbl = _lbl("", 48, Color(0.4, 1, 0.55))
+	num_lbl = _lbl("", 48, AMBER)
 	num_lbl.position = Vector2(px + 30, 428)
 	s.add_child(num_lbl)
 	var bn := _btn(_t("newnum"), Vector2(300, 64), false, 24)
@@ -383,6 +500,9 @@ func _slider_row(parent: VBoxContainer, id: String, label: String, mn: float, mx
 	sl.step = 0.05
 	sl.custom_minimum_size = Vector2(520, 60)
 	sl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	sl.add_theme_stylebox_override("slider", _track(Color(1, 1, 1, 0.14)))
+	sl.add_theme_stylebox_override("grabber_area", _track(ACC))
+	sl.add_theme_stylebox_override("grabber_area_highlight", _track(ACC_SOFT))
 	sl.value_changed.connect(_on_slider.bind(id))
 	row.add_child(sl)
 	sliders[id] = sl
@@ -391,7 +511,7 @@ func _slider_row(parent: VBoxContainer, id: String, label: String, mn: float, mx
 
 func _build_settings(vp: Vector2) -> void:
 	var s := _screen("set")
-	var p := _panel(Rect2(60, 100, vp.x - 120, vp.y - 250), 0.8)
+	var p := _panel(Rect2(60, 100, vp.x - 120, vp.y - 250), 0.82)
 	s.add_child(p)
 	var sc := ScrollContainer.new()
 	sc.position = Vector2(100, 120)
@@ -447,8 +567,7 @@ func _build_multi(vp: Vector2) -> void:
 	ip_edit.size = Vector2(rw - 60, 70)
 	ip_edit.placeholder_text = "192.168.1.20"
 	ip_edit.add_theme_font_size_override("font_size", 32)
-	ip_edit.add_theme_stylebox_override("normal", _sb(Color(1, 1, 1, 0.1), Color(1, 1, 1, 0.3), 14, 2))
-	ip_edit.add_theme_stylebox_override("focus", _sb(Color(1, 1, 1, 0.16), Color(0.3, 0.7, 1.0), 14, 2))
+	_field_style(ip_edit)
 	ip_edit.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_DEFAULT
 	ip_edit.text_submitted.connect(_on_ip_submit)
 	s.add_child(ip_edit)
@@ -457,7 +576,7 @@ func _build_multi(vp: Vector2) -> void:
 	bj.position = Vector2(rx + 30, 246)
 	bj.pressed.connect(_on_ip_join)
 	s.add_child(bj)
-	status_lbl = _lbl("", 26, Color(1, 0.85, 0.4))
+	status_lbl = _lbl("", 26, ACC_SOFT)
 	status_lbl.position = Vector2(rx + 30, 340)
 	status_lbl.size = Vector2(rw - 60, 80)
 	status_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -465,7 +584,7 @@ func _build_multi(vp: Vector2) -> void:
 	ip_lbl = _lbl("", 24, Color(1, 1, 1, 0.7))
 	ip_lbl.position = Vector2(rx + 30, 440)
 	s.add_child(ip_lbl)
-	host_lbl = _lbl("", 22, Color(0.4, 1, 0.55))
+	host_lbl = _lbl("", 22, AMBER)
 	host_lbl.position = Vector2(rx + 30, 480)
 	host_lbl.size = Vector2(rw - 60, 70)
 	host_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -499,6 +618,7 @@ func _intro() -> void:
 	t2.tween_property(title, "modulate:a", 1.0, 1.2)
 	t2.tween_property(title, "scale", Vector2.ONE, 1.6).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	t2.tween_property(tagline, "modulate:a", 1.0, 1.2).set_delay(0.6)
+	t2.tween_property(title_line, "size:x", 340.0, 1.0).set_delay(0.8).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	t2.tween_property(card, "modulate:a", 1.0, 0.9).set_delay(1.4)
 	await get_tree().create_timer(1.8).timeout
 	intro_done = true
@@ -514,6 +634,8 @@ func show_screen(n: String) -> void:
 	g.menu_cam = 2 if n == "char" else 1
 	title.visible = n == "main"
 	tagline.visible = n == "main"
+	title_line.visible = n == "main"
+	ver_lbl.visible = n == "main"
 	card.visible = n == "main"
 	if g.net != null:
 		g.net.set_scanning(n == "multi")
@@ -561,6 +683,7 @@ func open_again() -> void:
 	bar_b.position.y = g._vp().y - 70.0
 	title.modulate.a = 1.0
 	tagline.modulate.a = 1.0
+	title_line.size.x = 340.0
 	card.modulate.a = 1.0
 	refresh_profile()
 	show_screen("main")
@@ -658,9 +781,10 @@ func _refresh_settings() -> void:
 		for i in arr.size():
 			var b := arr[i] as Button
 			var on := i == v
-			var bg := Color(0.14, 0.5, 1.0, 0.95) if on else Color(0.07, 0.09, 0.14, 0.8)
-			b.add_theme_stylebox_override("normal", _sb(bg, Color(1, 1, 1, 0.5 if on else 0.16), 16, 2))
-			b.add_theme_stylebox_override("hover", _sb(bg.lightened(0.1), Color(1, 1, 1, 0.4), 16, 2))
+			var bg := ACC_BG if on else BTN_BG
+			var bd := ACC_EDGE if on else Color(1, 1, 1, 0.14)
+			b.add_theme_stylebox_override("normal", _sb(bg, bd, 8, 1))
+			b.add_theme_stylebox_override("hover", _sb(bg.lightened(0.1), bd, 8, 1))
 	(sliders["sens"] as HSlider).set_value_no_signal(float(g.gset["sens"]))
 	(sliders["volume"] as HSlider).set_value_no_signal(float(g.apps.volume))
 
