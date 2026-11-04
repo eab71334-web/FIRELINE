@@ -13,7 +13,7 @@ const CAR_GLB_YAW := PI
 const POLICE_GLB_PATH := "res://game/police.glb"
 const POLICE_GLB_YAW := PI
 const OFFICER_GLB_PATH := "res://game/peds/officer.glb"
-const PED_GLB_COUNT := 6
+const PED_GLB_COUNT := 16
 const PED_GLB_YAW := PI
 const WEAPON_GLB_DIR := "res://game/weapons/"
 const WEAPON_GLB_YAW := 0.0
@@ -643,6 +643,35 @@ var soft_tex: ImageTexture
 var quad_mesh: QuadMesh
 var hit_marker_t := 0.0
 var vig_tex: GradientTexture2D
+var car_bb := AABB()
+var door_l: Node3D
+var door_open_l := 0.0
+var door_target_l := 0.0
+var trunk_pivot: Node3D
+var trunk_bay: MeshInstance3D
+var trunk_open := 0.0
+var trunk_target := 0.0
+var bag_node: Node3D
+var bag_carried := false
+var supply_cd := 0.0
+var fp_dash: Node3D
+var fp_wheel: MeshInstance3D
+var fp_view := false
+var near_trunk := false
+var scene_kind := 0
+var scene_ph := 0
+var scene_t := 0.0
+var scene_ik_r := false
+var scene_ik_l := false
+var scene_lunge := 0.0
+var left_id := -1
+var right_id := -1
+var gas_id := -1
+var rev_id := -1
+var radio_i := 0
+var radio_snd: AudioStreamPlayer
+var radio_cache := {}
+var radio_names := ["OFF", "ASH FM", "LOS CITY NIGHTS", "RETRO WAVE", "BASS CITY"]
 
 
 func _ready() -> void:
@@ -725,10 +754,14 @@ func _vp() -> Vector2:
 
 
 func _jump_center() -> Vector2:
+	if in_car and not is_passenger:
+		return _vp() - Vector2(380, 150)
 	return _vp() - Vector2(170, 170)
 
 
 func _act_center() -> Vector2:
+	if in_car and not is_passenger:
+		return _vp() - Vector2(380, 330)
 	return _vp() - Vector2(350, 130)
 
 
@@ -1150,7 +1183,7 @@ func canon(n: String) -> String:
 	for ch in l:
 		if (ch >= "a" and ch <= "z") or (ch >= "0" and ch <= "9"):
 			o += ch
-	for pair in [["upperarm", "arm"], ["lowerarm", "forearm"], ["clavicle", "shoulder"], ["pelvis", "hips"], ["thigh", "upleg"], ["upperleg", "upleg"], ["calf", "leg"], ["shin", "leg"], ["lowerleg", "leg"], ["spine01", "spine"], ["spine02", "spine1"], ["spine03", "spine2"], ["neck01", "neck"], ["toes", "toebase"], ["ball", "toebase"]]:
+	for pair in [["upperarm01", "arm"], ["lowerarm01", "forearm"], ["upperleg01", "upleg"], ["lowerleg01", "leg"], ["wrist", "hand"], ["upperarm", "arm"], ["lowerarm", "forearm"], ["clavicle", "shoulder"], ["pelvis", "hips"], ["thigh", "upleg"], ["upperleg", "upleg"], ["calf", "leg"], ["shin", "leg"], ["lowerleg", "leg"], ["spine01", "spine"], ["spine02", "spine1"], ["spine03", "spine2"], ["neck01", "neck"], ["toes", "toebase"], ["ball", "toebase"]]:
 		if o == pair[0]:
 			o = pair[1]
 	return side + o
@@ -1261,7 +1294,7 @@ func _chain_rot(n: Node, top: Node) -> Quaternion:
 
 
 func _capture_rest(sk: Skeleton3D, top: Node) -> Dictionary:
-	return {"rot": _chain_rot(sk, top)}
+	return {"rot": _chain_rot(sk, top), "full": _rest_data(sk, top)}
 
 
 func _retarget(ap: AnimationPlayer, sk: Skeleton3D, ckey: String, top: Node = null) -> Dictionary:
@@ -1318,6 +1351,12 @@ func _retarget(ap: AnimationPlayer, sk: Skeleton3D, ckey: String, top: Node = nu
 				have_q0 = true
 				break
 
+	var tdata := _rest_data(sk, top)
+	var sdata := {}
+	for kk0 in anim_rest.keys():
+		sdata = (anim_rest[kk0] as Dictionary).get("full", {})
+		break
+	var generic := _needs_generic(sdata, tdata)
 	var store := {}
 	var flags := {}
 	var stats := {}
@@ -1326,6 +1365,7 @@ func _retarget(ap: AnimationPlayer, sk: Skeleton3D, ckey: String, top: Node = nu
 		var anim := (anim_src[k] as Animation).duplicate() as Animation
 		var srest: Dictionary = anim_rest.get(k, {})
 		var srot: Quaternion = srest.get("rot", Quaternion.IDENTITY)
+		var sfull: Dictionary = srest.get("full", {})
 		var tot := anim.get_track_count()
 		var arm_n := 0
 		var leg_n := 0
@@ -1347,7 +1387,9 @@ func _retarget(ap: AnimationPlayer, sk: Skeleton3D, ckey: String, top: Node = nu
 				arm_n += 1
 			elif nb in ["rupleg", "lupleg", "rleg", "lleg"]:
 				leg_n += 1
-			if nb == "hips" and have_q0 and hips_i >= 0:
+			if generic:
+				_retarget_track(anim, t, nb, sfull, tdata)
+			elif nb == "hips" and have_q0 and hips_i >= 0:
 				for ki in anim.track_get_key_count(t):
 					var qv: Quaternion = anim.track_get_key_value(t, ki)
 					var w := srot * qv * q0.inverse() * srot.inverse()
@@ -1356,7 +1398,7 @@ func _retarget(ap: AnimationPlayer, sk: Skeleton3D, ckey: String, top: Node = nu
 		var kept := anim.get_track_count()
 		var arms := arm_n >= 2
 		var legs := leg_n >= 2
-		stats[k] = "%d/%d A:%s L:%s" % [kept, tot, "Y" if arms else "N", "Y" if legs else "N"]
+		stats[k] = "%d/%d A:%s L:%s%s" % [kept, tot, "Y" if arms else "N", "Y" if legs else "N", " GEN" if generic else ""]
 		misses[k] = miss
 		if ckey.begins_with("player"):
 			anim_total += tot
@@ -1694,6 +1736,9 @@ func _build_sounds() -> void:
 	rain_snd.stream = sfx["rain"]
 	rain_snd.volume_db = -80.0
 	add_child(rain_snd)
+	radio_snd = AudioStreamPlayer.new()
+	radio_snd.volume_db = -10.0
+	add_child(radio_snd)
 
 
 func _sfx3d(key: String, pos: Vector3, vol_db: float = 0.0, pitch: float = 1.0, maxd: float = 140.0) -> void:
@@ -2246,7 +2291,12 @@ func _update_player_ik(delta: float) -> void:
 	var tl := 0.0
 	var fighting := aim_t > 0.0 and cur_weapon == 0 and not in_car and not in_heli and not dead and not phone_open
 	var lunge := 0.0
-	if armed:
+	if scene_kind != 0 and (scene_ik_r or scene_ik_l):
+		tr = 1.0 if scene_ik_r else 0.0
+		tl = 1.0 if scene_ik_l else 0.0
+		player_ik.rmode = 5
+		player_ik.lmode = 5
+	elif armed:
 		var shoulder := player.position + Vector3(0, 1.4, 0)
 		var d := _aim_point(60.0) - shoulder
 		if d.length() > 1.0:
@@ -2280,7 +2330,7 @@ func _update_player_ik(delta: float) -> void:
 			player_ik.lmode = 2
 		tr = 1.0
 		tl = 1.0
-	model.position = Vector3(-sin(yaw), 0.0, -cos(yaw)) * lunge
+	model.position = Vector3(-sin(yaw), 0.0, -cos(yaw)) * (lunge + scene_lunge)
 	var look_src := aim_pitch if aim_blend > 0.5 else cam_pitch
 	player_ik.head_pitch = -clampf(look_src - 0.08, -0.3, 0.75)
 	player_ik.head_yaw = clampf(wrapf(cam_yaw - model.rotation.y, -PI, PI), -1.0, 1.0)
@@ -2436,6 +2486,7 @@ func _build_car() -> void:
 	car.position = Vector3(5, 0.1, -9)
 	add_child(car)
 	_build_car_lights()
+	_build_car_extras()
 
 
 func _make_cop() -> Cop:
@@ -3208,6 +3259,7 @@ func _respawn() -> void:
 	hp = 100.0
 	stars = 0
 	evade_t = 0.0
+	_scene_reset()
 	for c in cops:
 		c.queue_free()
 	cops.clear()
@@ -3305,7 +3357,7 @@ func _try_fire(delta: float) -> void:
 			var n := mini(need, ammo_res[cur_weapon])
 			ammo_mag[cur_weapon] += n
 			ammo_res[cur_weapon] -= n
-	if (in_car and not is_passenger) or in_heli or dead or map_open or wheel_open or menu_active:
+	if (in_car and not is_passenger) or in_heli or dead or map_open or wheel_open or menu_active or scene_kind != 0:
 		fire_queued = false
 		return
 
@@ -3591,6 +3643,24 @@ func _icon(c: Control, kind: String, p: Vector2, u: float) -> void:
 		c.draw_rect(Rect2(p + Vector2(-0.45, -0.8) * u, Vector2(0.9, 1.6) * u), w, false, 3.0)
 		c.draw_line(p + Vector2(-0.15, -0.6) * u, p + Vector2(0.15, -0.6) * u, w, 3.0)
 		c.draw_circle(p + Vector2(0, 0.6) * u, u * 0.1, w)
+	elif kind == "aU":
+		c.draw_colored_polygon(PackedVector2Array([p + Vector2(0, -0.85) * u, p + Vector2(0.85, 0.6) * u, p + Vector2(-0.85, 0.6) * u]), w)
+	elif kind == "aD":
+		c.draw_colored_polygon(PackedVector2Array([p + Vector2(0, 0.85) * u, p + Vector2(-0.85, -0.6) * u, p + Vector2(0.85, -0.6) * u]), w)
+	elif kind == "aL":
+		c.draw_colored_polygon(PackedVector2Array([p + Vector2(-0.85, 0) * u, p + Vector2(0.6, 0.85) * u, p + Vector2(0.6, -0.85) * u]), w)
+	elif kind == "aR":
+		c.draw_colored_polygon(PackedVector2Array([p + Vector2(0.85, 0) * u, p + Vector2(-0.6, -0.85) * u, p + Vector2(-0.6, 0.85) * u]), w)
+	elif kind == "eye":
+		c.draw_arc(p, u * 0.95, 0.0, TAU, 28, w, 3.0, true)
+		c.draw_circle(p, u * 0.38, w)
+	elif kind == "radio":
+		c.draw_rect(Rect2(p + Vector2(-0.9, -0.35) * u, Vector2(1.8, 1.1) * u), w, false, 3.0)
+		c.draw_circle(p + Vector2(0.35, 0.2) * u, u * 0.28, w)
+		c.draw_line(p + Vector2(-0.6, -0.35) * u, p + Vector2(0.5, -1.0) * u, w, 3.0)
+	elif kind == "bag":
+		c.draw_rect(Rect2(p + Vector2(-0.9, -0.2) * u, Vector2(1.8, 1.0) * u), w)
+		c.draw_arc(p + Vector2(0, -0.2) * u, u * 0.5, PI, TAU, 16, w, 3.0, true)
 
 
 func _btn(c: Control, center: Vector2, r: float, pressed: bool, kind: String, caption: String) -> void:
@@ -3643,6 +3713,17 @@ func _draw_ui() -> void:
 	elif (not in_car) or is_passenger:
 		_btn(ui, _fire_center(), 90.0, fire_id != -1, "punch" if cur_weapon == 0 else "fire", "")
 		_btn(ui, _wpn_center(), 62.0, false, "guns", "")
+	_btn(ui, _view_center(), 42.0, fp_view, "eye", "")
+	if in_car and not is_passenger:
+		_btn(ui, _radio_center(), 42.0, radio_i > 0, "radio", "")
+		if radio_i > 0:
+			ui.draw_string(ThemeDB.fallback_font, Vector2(30.0, 440.0), String(radio_names[radio_i]), HORIZONTAL_ALIGNMENT_LEFT, 320, 20, Color(1, 1, 1, 0.85))
+		_arrow_btn(ui, _arrow_center("L"), 78.0, left_id != -1, "aL")
+		_arrow_btn(ui, _arrow_center("R"), 78.0, right_id != -1, "aR")
+		_arrow_btn(ui, _arrow_center("U"), 88.0, gas_id != -1, "aU")
+		_arrow_btn(ui, _arrow_center("D"), 88.0, rev_id != -1, "aD")
+	if near_trunk and not in_car and scene_kind == 0:
+		_btn(ui, _trunk_center(), 62.0, false, "bag", "TRUNK")
 	_btn(ui, _phone_btn_center(), 52.0, phone_open, "phone", "")
 
 	if in_car and not is_passenger:
@@ -4011,6 +4092,7 @@ func _clear_touch_ids() -> void:
 	jump_id = -1
 	fire_id = -1
 	down_id = -1
+	_clear_drive_ids()
 
 
 func _set_map(open: bool) -> void:
@@ -4178,6 +4260,27 @@ func _input(event: InputEvent) -> void:
 					mis_state = 0
 					mis_cd = 25.0
 					return
+			if p.distance_to(_view_center()) < 55.0:
+				_toggle_view()
+				return
+			if in_car and p.distance_to(_radio_center()) < 55.0:
+				_radio_next()
+				return
+			if in_car and not is_passenger and scene_kind == 0:
+				var ah := _arrow_hit(p)
+				if ah == "L":
+					left_id = event.index
+				elif ah == "R":
+					right_id = event.index
+				elif ah == "U":
+					gas_id = event.index
+				elif ah == "D":
+					rev_id = event.index
+				if ah != "":
+					return
+			if near_trunk and not in_car and p.distance_to(_trunk_center()) < 80.0:
+				_scene_start(3)
+				return
 			if _mini_rect().has_point(p):
 				_set_map(true)
 				return
@@ -4212,7 +4315,7 @@ func _input(event: InputEvent) -> void:
 				if not in_car and not in_heli:
 					want_jump = true
 				return
-			if p.x < half and stick_id == -1:
+			if p.x < half and stick_id == -1 and not (in_car and not is_passenger):
 				stick_id = event.index
 				stick_origin = p
 				stick_vec = Vector2.ZERO
@@ -4230,6 +4333,14 @@ func _input(event: InputEvent) -> void:
 				fire_id = -1
 			elif event.index == down_id:
 				down_id = -1
+			elif event.index == left_id:
+				left_id = -1
+			elif event.index == right_id:
+				right_id = -1
+			elif event.index == gas_id:
+				gas_id = -1
+			elif event.index == rev_id:
+				rev_id = -1
 	elif event is InputEventScreenDrag:
 		if map_open:
 			return
@@ -4237,10 +4348,10 @@ func _input(event: InputEvent) -> void:
 			stick_vec = (event.position - stick_origin).limit_length(RADIUS) / RADIUS
 		elif event.index == look_id:
 			cam_yaw -= event.relative.x * 0.005 * float(gset["sens"])
-			if aim_t > 0.0 and cur_weapon > 0 and not in_car and not in_heli:
+			if aim_t > 0.0 and cur_weapon > 0 and not in_car and not in_heli and not fp_view:
 				aim_pitch = clampf(aim_pitch + event.relative.y * 0.004 * float(gset["sens"]), -0.2, 0.7)
 			else:
-				cam_pitch = clampf(cam_pitch + event.relative.y * 0.004 * float(gset["sens"]), -0.1, 0.8)
+				cam_pitch = clampf(cam_pitch + event.relative.y * 0.004 * float(gset["sens"]), -0.9 if fp_view else -0.1, 0.9 if fp_view else 0.8)
 
 
 # ---------------------------------------------------------------- physics
@@ -4266,11 +4377,19 @@ func _physics_process(delta: float) -> void:
 	var input := stick_vec
 	if input == Vector2.ZERO:
 		input = Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
+	if in_car and not is_passenger:
+		var ax := (1.0 if right_id != -1 else 0.0) - (1.0 if left_id != -1 else 0.0)
+		var ay := (1.0 if rev_id != -1 else 0.0) - (1.0 if gas_id != -1 else 0.0)
+		if ax != 0.0 or ay != 0.0:
+			input = Vector2(ax, ay)
+	if scene_kind != 0:
+		input = Vector2.ZERO
 	if dead:
 		input = Vector2.ZERO
 
 	near_car = (not in_car) and (not in_heli) and (not dead) and car_wreck_t <= 0.0 and player.position.distance_to(car.position) < 6.0
 	near_heli = heli != null and (not in_heli) and (not in_car) and (not dead) and player.position.distance_to(heli.position) < 7.0
+	near_trunk = (not in_car) and (not in_heli) and (not dead) and car_wreck_t <= 0.0 and scene_kind == 0 and player.position.distance_to(car.global_transform * Vector3(0.0, 0.0, car_bb.position.z + car_bb.size.z + 0.5)) < 3.2
 
 	if not in_car and not in_heli and look_id == -1 and not armed_now and not dead:
 		cam_yaw -= input.x * 1.3 * clampf(-input.y, 0.0, 1.0) * delta
@@ -4289,7 +4408,10 @@ func _physics_process(delta: float) -> void:
 			_fly(delta, Vector2.ZERO, false, false, false)
 	else:
 		_car_step(delta, Vector2.ZERO, false, true)
-		_walk(delta, input)
+		if scene_kind == 0:
+			_walk(delta, input)
+		else:
+			_scene_step(delta)
 		if heli != null:
 			_fly(delta, Vector2.ZERO, false, false, false)
 
@@ -4309,6 +4431,8 @@ func _physics_process(delta: float) -> void:
 	_update_car_fx(delta)
 	_update_fire_spots(delta)
 	_update_mission(delta)
+	_update_car_extras(delta)
+	_update_radio()
 	_update_camera(delta)
 
 	if in_car and absf(car_speed) > 7.0 and not dead:
@@ -4361,7 +4485,7 @@ func _walk(delta: float, input: Vector2) -> void:
 		if step_t <= 0.0:
 			step_t = 1.0
 			_sfx3d("step", player.position, -9.0 + clampf(speed, 0.0, 8.0) * 0.5, randf_range(0.85, 1.15), 40.0)
-	if aim_t > 0.0:
+	if aim_t > 0.0 or fp_view:
 		model.rotation.y = lerp_angle(model.rotation.y, cam_yaw, 1.0 - exp(-12.0 * delta))
 	elif target.length() > 0.1:
 		var want_yaw := atan2(-target.x, -target.z)
@@ -4428,6 +4552,9 @@ func _drive(delta: float, input: Vector2, driven: bool, handbrake: bool) -> void
 func _update_camera(delta: float) -> void:
 	if menu_active:
 		_menu_camera(delta)
+		return
+	if fp_view and not in_heli:
+		_fp_camera(delta)
 		return
 	var cratio := clampf(absf(car_speed) / CAR_MAX, 0.0, 1.0)
 	var run_f := clampf(speed / MAX_SPEED, 0.0, 1.0)
@@ -4791,6 +4918,7 @@ func _menu_camera(delta: float) -> void:
 # ---------------------------------------------------------------- car (multiplayer aware)
 
 func _enter_car(seat: int) -> void:
+	_clear_drive_ids()
 	in_car = true
 	is_passenger = seat > 0
 	car_seat = seat
@@ -4802,7 +4930,8 @@ func _enter_car(seat: int) -> void:
 
 
 func _exit_car() -> void:
-	var side := 3.2 if car_seat <= 0 else -3.2
+	_clear_drive_ids()
+	var side := -2.4 if car_seat <= 0 else 2.4
 	in_car = false
 	is_passenger = false
 	car_seat = -1
@@ -4817,6 +4946,8 @@ func _exit_car() -> void:
 
 func _toggle_car() -> void:
 	fire_id = -1
+	if scene_kind != 0:
+		return
 	if net != null and net.active:
 		if in_car:
 			net.request_car_exit()
@@ -4825,9 +4956,12 @@ func _toggle_car() -> void:
 			net.request_car_enter()
 		return
 	if in_car:
-		_exit_car()
+		if absf(car_speed) < 4.0 and not dead:
+			_scene_start(2)
+		else:
+			_exit_car()
 	else:
-		_enter_car(0)
+		_scene_start(1)
 
 
 func _car_step(delta: float, input: Vector2, driven: bool, handbrake: bool) -> void:
@@ -5962,3 +6096,739 @@ func _vignette_tex() -> GradientTexture2D:
 		vig_tex.width = 256
 		vig_tex.height = 128
 	return vig_tex
+
+
+# ================================================================
+# ASHFALL: driving arrows, first person, doors, trunk, radio
+# ================================================================
+
+const TRUNK_DECK_FRAC := 0.58
+
+
+func _view_center() -> Vector2:
+	return Vector2(100.0, 285.0)
+
+
+func _radio_center() -> Vector2:
+	return Vector2(100.0, 380.0)
+
+
+func _trunk_center() -> Vector2:
+	return _vp() - Vector2(520.0, 130.0)
+
+
+func _arrow_center(k: String) -> Vector2:
+	var s := _vp()
+	if k == "L":
+		return Vector2(170.0, s.y - 150.0)
+	if k == "R":
+		return Vector2(390.0, s.y - 150.0)
+	if k == "U":
+		return Vector2(s.x - 170.0, s.y - 340.0)
+	return Vector2(s.x - 170.0, s.y - 150.0)
+
+
+func _arrow_hit(p: Vector2) -> String:
+	for k in ["L", "R", "U", "D"]:
+		if p.distance_to(_arrow_center(String(k))) < 98.0:
+			return String(k)
+	return ""
+
+
+func _arrow_btn(c: Control, center: Vector2, r: float, pressed: bool, kind: String) -> void:
+	c.draw_circle(center, r, Color(1, 1, 1, 0.34 if pressed else 0.12))
+	c.draw_arc(center, r, 0.0, TAU, 48, Color(1, 1, 1, 0.9), 3.0, true)
+	_icon(c, kind, center, r * 0.42)
+
+
+func _clear_drive_ids() -> void:
+	left_id = -1
+	right_id = -1
+	gas_id = -1
+	rev_id = -1
+
+
+# ---------------------------------------------------------------- car geometry helpers
+
+func _door_len() -> float:
+	return car_bb.size.z * 0.25
+
+
+func _door_hinge_z() -> float:
+	return car_bb.position.z + car_bb.size.z * 0.4
+
+
+func _door_x(left: bool) -> float:
+	if left:
+		return car_bb.position.x
+	return car_bb.position.x + car_bb.size.x
+
+
+func _door_h() -> float:
+	return minf(car_bb.size.y * 0.45, 0.7)
+
+
+func _door_y() -> float:
+	return car_bb.position.y + car_bb.size.y * 0.30 + _door_h() * 0.5
+
+
+func _seat_local() -> Vector3:
+	return Vector3(car_bb.position.x + car_bb.size.x * 0.27, car_bb.position.y + 0.2, _door_hinge_z() + _door_len() * 0.45)
+
+
+func _fp_eye_local() -> Vector3:
+	var sl := _seat_local()
+	return Vector3(sl.x, car_bb.position.y + car_bb.size.y * 0.80, sl.z - 0.1)
+
+
+func _trunk_len() -> float:
+	return car_bb.size.z * 0.17
+
+
+func _deck_y() -> float:
+	return car_bb.position.y + car_bb.size.y * TRUNK_DECK_FRAC
+
+
+func _trunk_z() -> float:
+	return car_bb.position.z + car_bb.size.z - _trunk_len()
+
+
+func _bag_home() -> Vector3:
+	return Vector3(0.0, _deck_y() + 0.14, car_bb.position.z + car_bb.size.z - 0.34)
+
+
+func _car_body_color() -> Color:
+	var best_v := 0.0
+	var best := Color(0.22, 0.30, 0.48)
+	var stack: Array = [car_visual]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is MeshInstance3D:
+			var mi := n as MeshInstance3D
+			if mi.mesh != null and mi.mesh.get_surface_count() > 0:
+				var vol := mi.mesh.get_aabb().get_volume()
+				var m := mi.get_active_material(0)
+				if vol > best_v and m is BaseMaterial3D:
+					best_v = vol
+					best = (m as BaseMaterial3D).albedo_color
+		for ch in n.get_children():
+			stack.append(ch)
+	var lum := best.r * 0.3 + best.g * 0.59 + best.b * 0.11
+	if lum < 0.07 or lum > 0.92:
+		best = Color(0.22, 0.30, 0.48)
+	best.a = 1.0
+	return best
+
+
+func _make_door(left: bool, col: Color) -> Node3D:
+	var sgn := -1.0 if left else 1.0
+	var dl := _door_len()
+	var dh := _door_h()
+	var dy := _door_y()
+	var pivot := Node3D.new()
+	pivot.position = Vector3(_door_x(left) + sgn * 0.02, 0.0, _door_hinge_z())
+	var body := _mat(col)
+	body.metallic = 0.5
+	body.roughness = 0.35
+	var panel := MeshInstance3D.new()
+	panel.mesh = _boxm(Vector3(0.07, dh, dl))
+	panel.position = Vector3(0.0, dy, dl * 0.5)
+	panel.material_override = body
+	pivot.add_child(panel)
+	var inner := MeshInstance3D.new()
+	inner.mesh = _boxm(Vector3(0.04, dh * 0.86, dl * 0.88))
+	inner.position = Vector3(-sgn * 0.045, dy, dl * 0.5)
+	inner.material_override = _mat(Color(0.05, 0.05, 0.07))
+	pivot.add_child(inner)
+	var handle := MeshInstance3D.new()
+	handle.name = "h"
+	handle.mesh = _boxm(Vector3(0.05, 0.04, 0.18))
+	handle.position = Vector3(sgn * 0.05, dy + dh * 0.2, dl * 0.82)
+	var chrome := _mat(Color(0.8, 0.82, 0.86))
+	chrome.metallic = 0.9
+	chrome.roughness = 0.2
+	handle.material_override = chrome
+	pivot.add_child(handle)
+	var edge := Node3D.new()
+	edge.name = "e"
+	edge.position = Vector3(0.0, dy, dl)
+	pivot.add_child(edge)
+	pivot.visible = false
+	return pivot
+
+
+func _build_car_extras() -> void:
+	var acc: Array = []
+	_collect_aabb(car_visual, Transform3D.IDENTITY, acc)
+	if acc.is_empty():
+		car_bb = AABB(Vector3(-1.0, 0.0, -2.7), Vector3(2.0, 1.4, 5.4))
+	else:
+		car_bb = acc[0]
+	var col := _car_body_color()
+	door_l = _make_door(true, col)
+	car.add_child(door_l)
+
+	var tl := _trunk_len()
+	var body := _mat(col)
+	body.metallic = 0.5
+	body.roughness = 0.35
+	trunk_pivot = Node3D.new()
+	trunk_pivot.position = Vector3(0.0, _deck_y(), _trunk_z())
+	var lid := MeshInstance3D.new()
+	lid.mesh = _boxm(Vector3(car_bb.size.x * 0.8, 0.06, tl))
+	lid.position = Vector3(0.0, 0.03, tl * 0.5)
+	lid.material_override = body
+	trunk_pivot.add_child(lid)
+	var under := MeshInstance3D.new()
+	under.mesh = _boxm(Vector3(car_bb.size.x * 0.72, 0.03, tl * 0.9))
+	under.position = Vector3(0.0, -0.02, tl * 0.5)
+	under.material_override = _mat(Color(0.05, 0.05, 0.07))
+	trunk_pivot.add_child(under)
+	var te := Node3D.new()
+	te.name = "e"
+	te.position = Vector3(0.0, 0.05, tl)
+	trunk_pivot.add_child(te)
+	trunk_pivot.visible = false
+	car.add_child(trunk_pivot)
+	trunk_bay = MeshInstance3D.new()
+	trunk_bay.mesh = _boxm(Vector3(car_bb.size.x * 0.76, 0.03, tl * 0.96))
+	trunk_bay.position = Vector3(0.0, _deck_y() + 0.02, _trunk_z() + tl * 0.5)
+	trunk_bay.material_override = _mat(Color(0.03, 0.03, 0.04))
+	trunk_bay.visible = false
+	car.add_child(trunk_bay)
+
+	bag_node = Node3D.new()
+	var bm := MeshInstance3D.new()
+	bm.mesh = _boxm(Vector3(0.46, 0.24, 0.26))
+	bm.material_override = _mat(Color(0.07, 0.11, 0.08))
+	bag_node.add_child(bm)
+	var strap := MeshInstance3D.new()
+	strap.mesh = _boxm(Vector3(0.06, 0.26, 0.28))
+	strap.material_override = _mat(Color(0.55, 0.45, 0.28))
+	bag_node.add_child(strap)
+	var hnd := MeshInstance3D.new()
+	hnd.mesh = _boxm(Vector3(0.2, 0.03, 0.03))
+	hnd.position = Vector3(0.0, 0.14, 0.0)
+	hnd.material_override = _mat(Color(0.55, 0.45, 0.28))
+	bag_node.add_child(hnd)
+	bag_node.position = _bag_home()
+	bag_node.visible = false
+	car.add_child(bag_node)
+
+	fp_dash = Node3D.new()
+	var eye := _fp_eye_local()
+	var wp := Node3D.new()
+	wp.position = eye + Vector3(0.0, -0.30, -0.55)
+	wp.rotation_degrees = Vector3(62.0, 0.0, 0.0)
+	fp_dash.add_child(wp)
+	fp_wheel = MeshInstance3D.new()
+	var tm := TorusMesh.new()
+	tm.inner_radius = 0.15
+	tm.outer_radius = 0.19
+	fp_wheel.mesh = tm
+	fp_wheel.material_override = _mat(Color(0.05, 0.05, 0.06))
+	wp.add_child(fp_wheel)
+	var spoke := MeshInstance3D.new()
+	spoke.mesh = _boxm(Vector3(0.34, 0.02, 0.035))
+	spoke.material_override = _mat(Color(0.08, 0.08, 0.1))
+	fp_wheel.add_child(spoke)
+	var dash := MeshInstance3D.new()
+	dash.mesh = _boxm(Vector3(car_bb.size.x * 0.9, 0.14, 0.4))
+	dash.position = Vector3(0.0, eye.y - 0.36, eye.z - 0.95)
+	dash.material_override = _mat(Color(0.04, 0.04, 0.05))
+	fp_dash.add_child(dash)
+	fp_dash.visible = false
+	car.add_child(fp_dash)
+
+
+func _update_car_extras(delta: float) -> void:
+	supply_cd = maxf(supply_cd - delta, 0.0)
+	if door_l == null:
+		return
+	var was_d := door_open_l
+	door_open_l = move_toward(door_open_l, door_target_l, delta * 2.0)
+	if was_d < 0.01 and door_open_l >= 0.01:
+		_sfx3d("reload", car.position, -2.0, 0.7, 40.0)
+	if was_d > 0.01 and door_open_l <= 0.01 and door_target_l <= 0.0:
+		_sfx3d("step", car.position, 6.0, 0.4, 40.0)
+	var was_t := trunk_open
+	trunk_open = move_toward(trunk_open, trunk_target, delta * 1.6)
+	if was_t < 0.01 and trunk_open >= 0.01:
+		_sfx3d("reload", car.position, -2.0, 0.6, 40.0)
+	if was_t > 0.01 and trunk_open <= 0.01 and trunk_target <= 0.0:
+		_sfx3d("step", car.position, 6.0, 0.35, 40.0)
+	var ed := door_open_l * door_open_l * (3.0 - 2.0 * door_open_l)
+	door_l.visible = door_open_l > 0.01
+	door_l.rotation.y = -deg_to_rad(68.0) * ed
+	var et := trunk_open * trunk_open * (3.0 - 2.0 * trunk_open)
+	trunk_pivot.visible = trunk_open > 0.01
+	trunk_pivot.rotation.x = -deg_to_rad(62.0) * et
+	trunk_bay.visible = trunk_open > 0.05
+	if not bag_carried and bag_node.get_parent() == car:
+		bag_node.visible = trunk_open > 0.5 and supply_cd <= 0.0
+	var fpcar := fp_view and in_car and not dead
+	fp_dash.visible = fpcar
+	if fpcar:
+		fp_wheel.rotation.y = -car_steer * 4.0
+
+
+# ---------------------------------------------------------------- scenes (enter / exit / trunk)
+
+func _walk_to(target: Vector3, delta: float, spd: float) -> bool:
+	var to := target - player.position
+	to.y = 0.0
+	var dist := to.length()
+	if dist <= 0.15:
+		speed = 0.0
+		return true
+	player.position += to.normalized() * minf(dist, spd * delta)
+	speed = spd * 0.9
+	model.rotation.y = lerp_angle(model.rotation.y, atan2(-to.x, -to.z), 1.0 - exp(-12.0 * delta))
+	return false
+
+
+func _face(point: Vector3, delta: float) -> void:
+	var f := point - player.position
+	model.rotation.y = lerp_angle(model.rotation.y, atan2(-f.x, -f.z), 1.0 - exp(-10.0 * delta))
+
+
+func _ik_target(right: bool, pos: Vector3, pole: Vector3) -> void:
+	if player_ik == null or not player_ik.ok:
+		return
+	if right:
+		scene_ik_r = true
+		player_ik.tgt_r = pos
+		player_ik.pole_r = pole
+	else:
+		scene_ik_l = true
+		player_ik.tgt_l = pos
+		player_ik.pole_l = pole
+
+
+func _scene_start(kind: int) -> void:
+	if scene_kind != 0 or dead or map_open:
+		return
+	if door_l == null:
+		if kind == 1 and not in_car and car_wreck_t <= 0.0:
+			_enter_car(0)
+		elif kind == 2 and in_car:
+			_exit_car()
+		return
+	var cf := car.global_transform
+	if kind == 1:
+		if car_wreck_t > 0.0 or in_car or in_heli:
+			return
+	elif kind == 2:
+		if not in_car:
+			return
+		in_car = false
+		is_passenger = false
+		car_seat = -1
+		player.position = cf * _seat_local()
+		player.velocity = Vector3.ZERO
+		player.visible = true
+		model.rotation.y = car.rotation.y
+		cam_pitch = 0.2
+		_clear_drive_ids()
+		_set_weapon(cur_weapon, false)
+	elif kind == 3:
+		if in_car or not near_trunk:
+			return
+		if supply_cd > 0.0:
+			_toast("TRUNK IS EMPTY - RESTOCKING %d s" % int(supply_cd), 2.5)
+			return
+	_set_phone(false)
+	aim_t = 0.0
+	scene_kind = kind
+	scene_ph = 0
+	scene_t = 0.0
+
+
+func _scene_reset() -> void:
+	scene_kind = 0
+	scene_ph = 0
+	scene_ik_r = false
+	scene_ik_l = false
+	scene_lunge = 0.0
+	door_target_l = 0.0
+	trunk_target = 0.0
+	if model != null:
+		model.scale = Vector3.ONE
+	if bag_carried and bag_node != null:
+		bag_carried = false
+		bag_node.reparent(car, false)
+		bag_node.position = _bag_home()
+		bag_node.rotation = Vector3.ZERO
+		bag_node.visible = false
+
+
+func _scene_step(delta: float) -> void:
+	scene_t += delta
+	scene_ik_r = false
+	scene_ik_l = false
+	scene_lunge = 0.0
+	var cf := car.global_transform
+	if scene_kind == 1:
+		_scene_enter(delta, cf)
+	elif scene_kind == 2:
+		_scene_exit(delta, cf)
+	elif scene_kind == 3:
+		_scene_trunk(delta, cf)
+	_animate(delta, true)
+
+
+func _door_outside(cf: Transform3D) -> Vector3:
+	var d := cf * Vector3(_door_x(true) - 0.95, 0.0, _door_hinge_z() + _door_len() * 0.5)
+	d.y = player.position.y
+	return d
+
+
+func _scene_enter(delta: float, cf: Transform3D) -> void:
+	var dpos := _door_outside(cf)
+	var seat := cf * _seat_local()
+	if scene_ph == 0:
+		if _walk_to(dpos, delta, 4.2) or scene_t > 3.0:
+			speed = 0.0
+			scene_ph = 1
+			scene_t = 0.0
+	elif scene_ph == 1:
+		speed = 0.0
+		_face(cf.origin, delta)
+		if scene_t < 0.55:
+			_ik_target(true, (door_l.get_node("h") as Node3D).global_position, Vector3.DOWN)
+		if scene_t > 0.2:
+			door_target_l = 1.0
+		if scene_t >= 0.8:
+			scene_ph = 2
+			scene_t = 0.0
+	else:
+		var e := clampf(scene_t / 0.55, 0.0, 1.0)
+		var es := e * e * (3.0 - 2.0 * e)
+		speed = 0.0
+		player.position = dpos.lerp(seat, es) + Vector3(0, sin(es * PI) * 0.12, 0)
+		model.rotation.y = lerp_angle(model.rotation.y, car.rotation.y, 1.0 - exp(-10.0 * delta))
+		model.scale = Vector3(1.0, 1.0 - 0.14 * sin(es * PI), 1.0)
+		if e >= 1.0:
+			_finish_enter()
+
+
+func _finish_enter() -> void:
+	scene_kind = 0
+	scene_ik_r = false
+	scene_ik_l = false
+	model.scale = Vector3.ONE
+	_enter_car(0)
+	door_target_l = 0.0
+
+
+func _scene_exit(delta: float, cf: Transform3D) -> void:
+	var dpos := _door_outside(cf)
+	var seat := cf * _seat_local()
+	if scene_ph == 0:
+		speed = 0.0
+		player.position = seat
+		door_target_l = 1.0
+		if scene_t >= 0.5:
+			scene_ph = 1
+			scene_t = 0.0
+	elif scene_ph == 1:
+		var e := clampf(scene_t / 0.55, 0.0, 1.0)
+		var es := e * e * (3.0 - 2.0 * e)
+		speed = 0.0
+		player.position = seat.lerp(dpos, es) + Vector3(0, sin(es * PI) * 0.12, 0)
+		var outward := cf.basis * Vector3(-1, 0, 0)
+		model.rotation.y = lerp_angle(model.rotation.y, atan2(-outward.x, -outward.z), 1.0 - exp(-8.0 * delta))
+		model.scale = Vector3(1.0, 1.0 - 0.14 * sin(es * PI), 1.0)
+		if e >= 1.0:
+			model.scale = Vector3.ONE
+			scene_ph = 2
+			scene_t = 0.0
+	else:
+		speed = 0.0
+		_face(cf.origin, delta)
+		if scene_t >= 0.15:
+			door_target_l = 0.0
+		_ik_target(true, (door_l.get_node("e") as Node3D).global_position, Vector3.DOWN)
+		if door_open_l <= 0.02 and scene_t > 0.3:
+			scene_kind = 0
+			scene_ik_r = false
+			model.scale = Vector3.ONE
+			player_col.set_deferred("disabled", false)
+
+
+func _give_supplies() -> void:
+	for i in range(1, ammo_res.size()):
+		ammo_res[i] = maxi(ammo_res[i], int(DEFAULT_RES[i]) * 2)
+	hp = minf(hp + 25.0, 100.0)
+	_toast("SUPPLIES TAKEN: AMMO + MEDKIT", 3.0)
+
+
+func _scene_trunk(delta: float, cf: Transform3D) -> void:
+	var rpos := cf * Vector3(0.0, 0.0, car_bb.position.z + car_bb.size.z + 0.45)
+	rpos.y = player.position.y
+	var lid_edge := (trunk_pivot.get_node("e") as Node3D).global_position
+	var bag_home := cf * _bag_home()
+	var fw := Vector3(-sin(model.rotation.y), 0.0, -cos(model.rotation.y))
+	var rt := Vector3(cos(model.rotation.y), 0.0, -sin(model.rotation.y))
+	var carry := player.position + fw * 0.34 - rt * 0.30 + Vector3(0, 0.82, 0)
+	if scene_ph == 0:
+		if _walk_to(rpos, delta, 4.2) or scene_t > 3.0:
+			speed = 0.0
+			scene_ph = 1
+			scene_t = 0.0
+	elif scene_ph == 1:
+		speed = 0.0
+		_face(cf.origin, delta)
+		scene_lunge = 0.12 * sin(clampf(scene_t / 0.9, 0.0, 1.0) * PI)
+		if scene_t < 0.6:
+			_ik_target(true, lid_edge, Vector3.DOWN)
+		if scene_t > 0.3:
+			trunk_target = 1.0
+		if scene_t >= 1.0:
+			scene_ph = 2
+			scene_t = 0.0
+	elif scene_ph == 2:
+		speed = 0.0
+		_face(cf.origin, delta)
+		scene_lunge = 0.26 * sin(clampf(scene_t / 0.95, 0.0, 1.0) * PI)
+		var lt := bag_home + Vector3(0, 0.1, 0)
+		if scene_t >= 0.55:
+			lt = lt.lerp(carry, clampf((scene_t - 0.55) / 0.35, 0.0, 1.0))
+		_ik_target(false, lt, Vector3.DOWN)
+		if scene_t > 0.45 and not bag_carried:
+			bag_carried = true
+			bag_node.visible = true
+			bag_node.reparent(self, true)
+			_give_supplies()
+		if bag_carried:
+			bag_node.global_position = lt + Vector3(0, -0.16, 0)
+		if scene_t >= 0.95:
+			scene_ph = 3
+			scene_t = 0.0
+	else:
+		speed = 0.0
+		_face(cf.origin, delta)
+		_ik_target(false, carry, Vector3.DOWN)
+		_ik_target(true, lid_edge, Vector3.DOWN)
+		if bag_carried:
+			bag_node.global_position = carry + Vector3(0, -0.16, 0)
+		if scene_t > 0.15:
+			trunk_target = 0.0
+		if trunk_open <= 0.02 and scene_t > 0.4:
+			scene_kind = 0
+			scene_ik_l = false
+			scene_ik_r = false
+			bag_carried = false
+			bag_node.visible = false
+			bag_node.reparent(car, false)
+			bag_node.position = _bag_home()
+			bag_node.rotation = Vector3.ZERO
+			supply_cd = 90.0
+
+
+# ---------------------------------------------------------------- first person
+
+func _toggle_view() -> void:
+	fp_view = not fp_view
+	cam_pitch = 0.18
+	_toast("FIRST PERSON" if fp_view else "THIRD PERSON", 1.5)
+
+
+func _fp_camera(delta: float) -> void:
+	var aiming := aim_t > 0.0 and cur_weapon > 0 and ((not in_car) or is_passenger) and not dead and not phone_open
+	aim_blend = move_toward(aim_blend, 1.0 if aiming else 0.0, 4.0 * delta)
+	var pos := Vector3.ZERO
+	var fov_t := 78.0 - 12.0 * aim_blend
+	if in_car:
+		pos = car.global_transform * _fp_eye_local()
+		if look_id == -1:
+			cam_yaw = lerp_angle(cam_yaw, car.rotation.y, 1.0 - exp(-3.0 * delta))
+		fov_t = 74.0 + clampf(absf(car_speed) / CAR_MAX, 0.0, 1.0) * 22.0
+	else:
+		pos = player.position + Vector3(0, 1.62, 0) + Vector3(-sin(cam_yaw), 0.0, -cos(cam_yaw)) * 0.14
+	cam.position = pos
+	cam.rotation = Vector3(-(cam_pitch - 0.18), cam_yaw, 0.0)
+	cam.fov = lerpf(cam.fov, fov_t, 1.0 - exp(-6.0 * delta))
+	cam_look = pos
+
+
+# ---------------------------------------------------------------- radio (synth stations + optional files)
+
+func _radio_stream(i: int) -> AudioStream:
+	if radio_cache.has(i):
+		return radio_cache[i]
+	var f := _load_sound_file("radio%d" % i)
+	if f != null:
+		_make_loop(f)
+		radio_cache[i] = f
+		return f
+	var st := _synth_station(i)
+	radio_cache[i] = st
+	return st
+
+
+func _radio_next() -> void:
+	radio_i = (radio_i + 1) % radio_names.size()
+	if radio_snd == null:
+		return
+	if radio_i == 0:
+		radio_snd.stop()
+		_toast("RADIO OFF", 1.5)
+	else:
+		radio_snd.stream = _radio_stream(radio_i)
+		radio_snd.play()
+		_toast(String(radio_names[radio_i]), 2.5)
+
+
+func _update_radio() -> void:
+	if radio_snd == null:
+		return
+	var want := radio_i > 0 and in_car and not dead
+	if want and not radio_snd.playing and radio_snd.stream != null:
+		radio_snd.play()
+	elif not want and radio_snd.playing:
+		radio_snd.stop()
+
+
+func _synth_station(idx: int) -> AudioStreamWAV:
+	var rate := 11025
+	var bpms := [0.0, 100.0, 82.0, 122.0, 140.0]
+	var roots := [0.0, 55.0, 49.0, 65.41, 41.2]
+	var prog := [0, -2, -4, -2]
+	var arp := [0, 4, 7, 12]
+	var bpm: float = bpms[idx]
+	var root: float = roots[idx]
+	var beat := 60.0 / bpm
+	var bars := 4
+	var n := int(beat * 4.0 * float(bars) * float(rate))
+	var s := PackedFloat32Array()
+	s.resize(n)
+	for i in n:
+		var t := float(i) / float(rate)
+		var bt := t / beat
+		var bar := int(bt / 4.0) % bars
+		var beat_i := int(bt) % 4
+		var ph := (bt - floorf(bt)) * beat
+		var b8 := bt * 2.0
+		var ph8 := (b8 - floorf(b8)) * beat * 0.5
+		var b16 := bt * 4.0
+		var ph16 := (b16 - floorf(b16)) * beat * 0.25
+		var step16 := int(b16)
+		var off: int = prog[bar]
+		var v := 0.0
+		var kick_on := idx == 1 or beat_i == 0 or beat_i == 2
+		if kick_on:
+			v += sin(TAU * 55.0 * ph * (1.0 + 2.0 * exp(-ph * 20.0))) * exp(-ph * 14.0) * 0.85
+		if idx != 1 and (beat_i == 1 or beat_i == 3):
+			v += (randf() * 2.0 - 1.0) * exp(-ph * 22.0) * 0.32
+		if idx == 4:
+			v += (randf() * 2.0 - 1.0) * exp(-ph16 * 120.0) * 0.09
+		elif idx == 1:
+			if int(b8) % 2 == 1:
+				v += (randf() * 2.0 - 1.0) * exp(-ph8 * 70.0) * 0.12
+		else:
+			v += (randf() * 2.0 - 1.0) * exp(-ph8 * 70.0) * 0.08
+		var bf := root * pow(2.0, float(off) / 12.0)
+		if idx == 4:
+			v += sin(TAU * bf * t) * exp(-ph * 2.2) * 0.38
+		else:
+			v += (sin(TAU * bf * t) + 0.4 * sin(TAU * bf * 2.0 * t)) * exp(-ph8 * 5.0) * 0.26
+		if idx == 2 or idx == 3:
+			var af := root * 4.0 * pow(2.0, float(off + int(arp[step16 % 4])) / 12.0)
+			var wv := sin(TAU * af * t)
+			if idx == 3:
+				wv = 1.0 if wv > 0.0 else -1.0
+			v += wv * exp(-ph16 * 9.0) * 0.1
+		if idx == 1:
+			var pf := root * 4.0 * pow(2.0, float(off) / 12.0)
+			v += (sin(TAU * pf * t) + sin(TAU * pf * 1.26 * t) + sin(TAU * pf * 1.5 * t)) * 0.035
+		s[i] = clampf(v * 0.8, -1.0, 1.0)
+	return _wav(s, rate, true)
+
+
+# ================================================================
+# Generic retargeting: any humanoid rig can use the same animation files
+# ================================================================
+
+func _chain_xf(n: Node, top: Node) -> Transform3D:
+	var x := Transform3D.IDENTITY
+	var cur := n
+	while cur != null:
+		if cur is Node3D:
+			x = (cur as Node3D).transform * x
+		if cur == top:
+			break
+		cur = cur.get_parent()
+	return x
+
+
+func _rest_data(sk: Skeleton3D, top: Node) -> Dictionary:
+	var xf := _chain_xf(sk, top)
+	var xq := xf.basis.orthonormalized().get_rotation_quaternion()
+	var gq := {}
+	var lq := {}
+	var pos := {}
+	for i in sk.get_bone_count():
+		var cn := canon(sk.get_bone_name(i))
+		if gq.has(cn):
+			continue
+		var gr := sk.get_bone_global_rest(i)
+		gq[cn] = (xq * gr.basis.orthonormalized().get_rotation_quaternion()).normalized()
+		lq[cn] = sk.get_bone_rest(i).basis.orthonormalized().get_rotation_quaternion().normalized()
+		pos[cn] = xf * gr.origin
+	if not (pos.has("larm") and pos.has("rarm") and pos.has("hips") and pos.has("head")):
+		return {}
+	var up: Vector3 = (pos["head"] as Vector3) - (pos["hips"] as Vector3)
+	var side: Vector3 = (pos["larm"] as Vector3) - (pos["rarm"] as Vector3)
+	if up.length() < 0.0001 or side.length() < 0.0001:
+		return {}
+	up = up.normalized()
+	side = side - up * side.dot(up)
+	if side.length() < 0.0001:
+		return {}
+	side = side.normalized()
+	var fwd := side.cross(up)
+	var fq := Basis(side, up, fwd).get_rotation_quaternion().normalized()
+	var fqi := fq.inverse()
+	var g2 := {}
+	for k in gq.keys():
+		g2[k] = (fqi * (gq[k] as Quaternion)).normalized()
+	return {"g": g2, "l": lq}
+
+
+func _needs_generic(sd: Dictionary, td: Dictionary) -> bool:
+	if sd.is_empty() or td.is_empty():
+		return false
+	var sl: Dictionary = sd["l"]
+	var tl: Dictionary = td["l"]
+	var total := 0.0
+	var cnt := 0
+	for k in ["larm", "rarm", "lforearm", "rforearm", "lupleg", "rupleg", "lleg", "rleg", "spine", "neck", "head"]:
+		if sl.has(k) and tl.has(k):
+			total += (sl[k] as Quaternion).angle_to(tl[k] as Quaternion)
+			cnt += 1
+	if cnt < 6:
+		return false
+	return total / float(cnt) > 0.12
+
+
+func _retarget_track(anim: Animation, t: int, nb: String, sd: Dictionary, td: Dictionary) -> void:
+	var sg: Dictionary = sd.get("g", {})
+	var sl: Dictionary = sd.get("l", {})
+	var tg: Dictionary = td.get("g", {})
+	var tl: Dictionary = td.get("l", {})
+	if not (sg.has(nb) and sl.has(nb) and tg.has(nb) and tl.has(nb)):
+		return
+	var gs: Quaternion = sg[nb]
+	var rs: Quaternion = sl[nb]
+	var gt: Quaternion = tg[nb]
+	var rtl: Quaternion = tl[nb]
+	var rsi := rs.inverse()
+	var gsi := gs.inverse()
+	var gti := gt.inverse()
+	for ki in anim.track_get_key_count(t):
+		var qv: Quaternion = anim.track_get_key_value(t, ki)
+		var ds := rsi * qv
+		var qg := gs * ds * gsi
+		var dt := gti * qg * gt
+		anim.track_set_key_value(t, ki, (rtl * dt).normalized())
